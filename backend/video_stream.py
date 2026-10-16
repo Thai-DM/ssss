@@ -376,6 +376,8 @@ class ChestStreamManager:
         self.timestamps = deque(maxlen=300)
         self.current_bpm = 16.0
         self.current_roi = None
+        self.last_skeleton_kpts = None
+        self.last_seen_person_time = 0.0
         self.latest_frame_jpeg: Optional[bytes] = None
         self.latest_motion_val = 0.0
 
@@ -469,87 +471,100 @@ class ChestStreamManager:
 
             display_frame = frame.copy()
             h, w = frame.shape[:2]
-            person_detected = False
 
-            # Chạy YOLO pose định kỳ mỗi 10 frame (~0.33s) với imgsz=256 siêu mượt
-            # Không ép chạy mỗi frame khi current_roi là None để tránh nghẽn CPU
-            if frame_idx % 10 == 0:
+            # 1. Chạy YOLO Pose định kỳ mỗi 8 frame (~0.25s) với imgsz=256
+            if frame_idx % 8 == 0:
                 try:
                     res = self.yolo_model(frame, imgsz=256, verbose=False)[0]
-                    if res.boxes is not None and len(res.boxes) > 0 and float(res.boxes.conf[0]) >= 0.4:
+                    if res.boxes is not None and len(res.boxes) > 0 and float(res.boxes.conf[0]) >= 0.35:
                         if res.keypoints is not None and len(res.keypoints.xy) > 0:
                             person = res.keypoints.xy[0]
-                            person_detected = True
+                            self.last_skeleton_kpts = person.cpu().numpy()
+                            self.last_seen_person_time = time.time()
+
                             ls, rs, lh, rh = person[5], person[6], person[11], person[12]
                             
-                            # Tính ROI ngực
+                            # Tính ROI ngực thích ứng
                             rx1, ry1, rx2, ry2 = self.roi_extractor.get_chest_roi(frame, ls, rs, lh, rh)
                             rx1, ry1 = max(0, int(rx1)), max(0, int(ry1))
                             rx2, ry2 = min(w, int(rx2)), min(h, int(ry2))
 
-                            if rx2 > rx1 + 20 and ry2 > ry1 + 20:
+                            if rx2 > rx1 + 25 and ry2 > ry1 + 25:
                                 new_roi = (rx1, ry1, rx2, ry2)
                                 if self.current_roi is None:
                                     self.current_roi = new_roi
+                                    self.motion_tracker.prev_gray = None
                                 else:
-                                    # Làm mượt chuyển động ROI (chống giật)
-                                    alpha = 0.3
-                                    cx_old = (self.current_roi[0] + self.current_roi[2]) / 2
-                                    cy_old = (self.current_roi[1] + self.current_roi[3]) / 2
-                                    cx_new = (new_roi[0] + new_roi[2]) / 2
-                                    cy_new = (new_roi[1] + new_roi[3]) / 2
-                                    if ((cx_new - cx_old)**2 + (cy_new - cy_old)**2)**0.5 >= 8.0:
+                                    # KHÓA CỨNG ROI (Anti-jitter lock):
+                                    # Chỉ dịch chuyển khung ngực khi người dùng thực sự thay đổi tư thế (dist >= 14px).
+                                    # Nếu chỉ rung lắc nhẹ do hít thở thì giữ nguyên khung cũ để triệt tiêu nhấp nháy.
+                                    cx_old = (self.current_roi[0] + self.current_roi[2]) / 2.0
+                                    cy_old = (self.current_roi[1] + self.current_roi[3]) / 2.0
+                                    cx_new = (new_roi[0] + new_roi[2]) / 2.0
+                                    cy_new = (new_roi[1] + new_roi[3]) / 2.0
+                                    dist = ((cx_new - cx_old)**2 + (cy_new - cy_old)**2)**0.5
+
+                                    if dist >= 14.0:
+                                        alpha = 0.35
                                         self.current_roi = tuple(
                                             int(self.current_roi[i] + alpha * (new_roi[i] - self.current_roi[i]))
                                             for i in range(4)
                                         )
-
-                            # Vẽ xương khớp (Skeleton) nếu bật
-                            if self.show_skeleton:
-                                kpts = person.cpu().numpy()
-                                for p1, p2 in SKELETON_PAIRS:
-                                    if p1 < len(kpts) and p2 < len(kpts):
-                                        x1, y1 = int(kpts[p1][0]), int(kpts[p1][1])
-                                        x2, y2 = int(kpts[p2][0]), int(kpts[p2][1])
-                                        if x1 > 0 and y1 > 0 and x2 > 0 and y2 > 0:
-                                            cv2.line(display_frame, (x1, y1), (x2, y2), (99, 102, 241), 2)
-                                for pt in [5, 6, 11, 12]:
-                                    if pt < len(kpts):
-                                        px, py = int(kpts[pt][0]), int(kpts[pt][1])
-                                        if px > 0 and py > 0:
-                                            cv2.circle(display_frame, (px, py), 5, (0, 210, 180), -1)
-                except Exception as e:
+                                        # Reset frame tham chiếu optical flow khi ROI đổi vị trí để chống nhảy vọt tín hiệu
+                                        self.motion_tracker.prev_gray = None
+                except Exception:
                     pass
 
-            # Xử lý luồng chuyển động quang học trên Chest ROI
+            # Trạng thái phát hiện người ổn định (không chớp tắt theo từng frame)
+            person_detected = (time.time() - self.last_seen_person_time) < 1.5
+
+            # 2. Vẽ khung xương Pose trên TẤT CẢ các frame (chống nhấp nháy / chớp tắt)
+            if self.show_skeleton and person_detected and self.last_skeleton_kpts is not None:
+                kpts = self.last_skeleton_kpts
+                for p1, p2 in SKELETON_PAIRS:
+                    if p1 < len(kpts) and p2 < len(kpts):
+                        x1_s, y1_s = int(kpts[p1][0]), int(kpts[p1][1])
+                        x2_s, y2_s = int(kpts[p2][0]), int(kpts[p2][1])
+                        if x1_s > 0 and y1_s > 0 and x2_s > 0 and y2_s > 0:
+                            cv2.line(display_frame, (x1_s, y1_s), (x2_s, y2_s), (99, 102, 241), 2)
+                for pt in [5, 6, 11, 12]:
+                    if pt < len(kpts):
+                        px, py = int(kpts[pt][0]), int(kpts[pt][1])
+                        if px > 0 and py > 0:
+                            cv2.circle(display_frame, (px, py), 5, (0, 210, 180), -1)
+
+            # 3. Xử lý luồng chuyển động quang học trên Chest ROI
             motion_val = 0.0
             if self.current_roi is not None:
                 x1, y1, x2, y2 = self.current_roi
                 chest_crop = frame[y1:y2, x1:x2]
 
                 if chest_crop.size > 0:
-                    motion_val = self.motion_tracker.process(chest_crop) or 0.0
-                    self.latest_motion_val = motion_val
-                    self.motion_buffer.append(motion_val)
-                    self.timestamps.append(time.time())
+                    raw_motion = self.motion_tracker.process(chest_crop)
+                    if raw_motion is not None:
+                        # Triệt tiêu gai đột biến bất thường (Outlier clipping)
+                        motion_val = float(np.clip(raw_motion, -1.8, 1.8))
+                        self.latest_motion_val = motion_val
+                        self.motion_buffer.append(motion_val)
+                        self.timestamps.append(time.time())
 
-                    # Vẽ khung Chest ROI lên khung hình nếu bật
+                    # Vẽ khung Chest ROI lên khung hình (vững chắc, không rung giật)
                     if self.show_roi:
                         cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 210, 180), 2)
                         cv2.putText(display_frame, f"CHEST ROI ({x2-x1}x{y2-y1})", (x1, max(18, y1 - 8)),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 210, 180), 1)
 
-            # Tính toán BPM nhịp thở định kỳ mỗi giây khi đủ dữ liệu
-            if len(self.motion_buffer) >= 60 and frame_idx % 15 == 0:
+            # 4. Tính toán BPM nhịp thở ổn định (cửa sổ trượt >= 5.0 giây, tránh nhảy vọt)
+            if len(self.motion_buffer) >= 100 and frame_idx % 12 == 0:
                 duration = self.timestamps[-1] - self.timestamps[0]
-                if duration > 2.0:
+                if duration >= 5.0:
                     sig_arr = np.array(list(self.motion_buffer))
                     t_arr = np.array(list(self.timestamps))
                     smooth_sig = ChestSignalFilter.smooth(sig_arr, timestamps=t_arr)
                     calc_bpm, _ = ChestBREstimator.estimate(smooth_sig, duration)
-                    if 6.0 <= calc_bpm <= 35.0:
-                        # EMA smoothing
-                        self.current_bpm = 0.25 * calc_bpm + 0.75 * self.current_bpm
+                    if 7.0 <= calc_bpm <= 32.0:
+                        # EMA làm mượt: 12% giá trị mới + 88% giá trị cũ -> chỉ số êm ái, vững vàng
+                        self.current_bpm = 0.12 * calc_bpm + 0.88 * self.current_bpm
 
             # Vẽ HUD thông tin lâm sàng lên màn hình
             cv2.rectangle(display_frame, (10, 10), (320, 85), (15, 23, 42), -1)
