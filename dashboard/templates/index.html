@@ -1,0 +1,816 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VitalsHub - Hệ thống Giám sát Sinh hiệu Không tiếp xúc (rPPG & YOLO Motion)</title>
+  <meta name="description" content="Nền tảng hợp nhất giám sát nhịp tim và nhịp thở thời gian thực sử dụng MediaPipe Face Mesh, thuật toán CHROM và YOLO Pose Estimation" />
+
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Core Stylesheet -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=4">
+</head>
+
+<body class="dark-theme">
+
+  <!-- ========================================================================
+       TOP NAVIGATION BAR
+       ======================================================================== -->
+  <header class="top-bar">
+    <div class="top-bar-left">
+      <div class="brand-logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+        </svg>
+      </div>
+      <div class="brand-info">
+        <h1 class="brand-title">VitalsHub <span class="badge-pro">PRO AI</span></h1>
+        <p class="brand-subtitle">Hệ thống Giám sát Sinh hiệu Không tiếp xúc (rPPG + Chest Motion)</p>
+      </div>
+    </div>
+
+    <!-- Main Navigation Tabs -->
+    <nav class="nav-tabs" role="tablist">
+      <button class="nav-tab active" data-tab="tab-overview" id="btn-tab-overview">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        <span>Tổng quan</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-rppg" id="btn-tab-rppg">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        <span>Camera rPPG</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-chest" id="btn-tab-chest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a5 5 0 0 0-5 5v3a5 5 0 0 0 10 0V7a5 5 0 0 0-5-5z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>
+        <span>Ngực & YOLO</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-records" id="btn-tab-records">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+        <span>Lịch sử & Báo cáo</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-settings" id="btn-tab-settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Cài đặt</span>
+      </button>
+    </nav>
+
+    <div class="top-bar-right">
+      <!-- Audio Alarm Toggle -->
+      <button class="icon-btn" id="btn-audio-toggle" title="Bật/Tắt chuông báo động">
+        <svg id="icon-sound-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+        <svg id="icon-sound-off" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+      </button>
+
+      <!-- Connection Status Indicator -->
+      <div class="connection-status" id="connection-status-pill">
+        <span class="status-dot pulse" id="status-dot"></span>
+        <span id="status-text">Đang kết nối SSE...</span>
+      </div>
+
+      <!-- Clock -->
+      <div class="top-clock" id="top-clock">--:--:--</div>
+    </div>
+  </header>
+
+  <!-- ========================================================================
+       MAIN APP CONTAINER (TABS)
+       ======================================================================== -->
+  <main class="page-container">
+
+    <!-- ====================================================================
+         TAB 1: TỔNG QUAN SINH HIỆU (OVERVIEW HUB)
+         ==================================================================== -->
+    <section class="tab-content active" id="tab-overview">
+      
+      <!-- Top Overview Stats Banner -->
+      <div class="overview-banner">
+        <div class="banner-stat">
+          <span class="banner-label">Trạng thái hệ thống</span>
+          <span class="banner-value text-emerald" id="banner-sys-status">HOẠT ĐỘNG TỐT</span>
+        </div>
+        <div class="banner-stat">
+          <span class="banner-label">Chế độ Camera rPPG</span>
+          <span class="banner-value" id="banner-rppg-mode">Webcam Laptop Live</span>
+        </div>
+        <div class="banner-stat">
+          <span class="banner-label">Tốc độ khung hình (FPS)</span>
+          <span class="banner-value font-mono" id="banner-fps">30.0 FPS</span>
+        </div>
+        <div class="banner-stat">
+          <span class="banner-label">Cơ sở dữ liệu</span>
+          <span class="banner-value" id="banner-db">SQLite + Firebase Ready</span>
+        </div>
+      </div>
+
+      <!-- 4 Vital Hero Cards Grid -->
+      <div class="vitals-hero-grid">
+
+        <!-- 1. Heart Rate (Nhịp tim rPPG) -->
+        <div class="vital-card card-cardiac">
+          <div class="vital-card-header">
+            <div class="vital-title-wrap">
+              <span class="vital-icon-circle icon-heart">
+                <svg class="heart-pulse-icon" id="heart-svg" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+              </span>
+              <div>
+                <h2 class="vital-name">NHỊP TIM (HR)</h2>
+                <span class="vital-method">Quang phổ mao mạch (rPPG / CHROM)</span>
+              </div>
+            </div>
+            <span class="status-pill pill-normal" id="hr-status-pill">Bình thường</span>
+          </div>
+
+          <div class="vital-gauge-body">
+            <div class="vital-main-val">
+              <span class="value-digits font-mono" id="val-heart-rate">--</span>
+              <span class="value-unit font-mono">BPM</span>
+            </div>
+            <div class="vital-sub-stats">
+              <div class="sub-stat"><span class="sub-lbl">Trung bình:</span> <strong id="hr-avg">--</strong></div>
+              <div class="sub-stat"><span class="sub-lbl">Thấp nhất:</span> <strong id="hr-min">--</strong></div>
+              <div class="sub-stat"><span class="sub-lbl">Cao nhất:</span> <strong id="hr-max">--</strong></div>
+            </div>
+          </div>
+
+          <div class="vital-progress-bar-wrap">
+            <div class="vital-progress-bar hr-gradient" id="hr-progress-bar" style="width: 50%;"></div>
+          </div>
+          <div class="progress-labels">
+            <span>40 BPM (Chậm)</span>
+            <span>Khoảng chuẩn (60-100)</span>
+            <span>160 BPM (Nhanh)</span>
+          </div>
+        </div>
+
+        <!-- 2. Respiration Rate (Nhịp thở rPPG) -->
+        <div class="vital-card card-resp-rppg">
+          <div class="vital-card-header">
+            <div class="vital-title-wrap">
+              <span class="vital-icon-circle icon-lung">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                  <path d="M7 16a4 4 0 0 1-4-4V7a4 4 0 0 1 8 0v1a4 4 0 0 1 8 0v-1a4 4 0 0 1 8 0v5a4 4 0 0 1-4 4"/>
+                  <path d="M12 3v13"/>
+                </svg>
+              </span>
+              <div>
+                <h2 class="vital-name">NHỊP THỞ KHUÔN MẶT</h2>
+                <span class="vital-method">Dao động màu da (rBBG FFT)</span>
+              </div>
+            </div>
+            <span class="status-pill pill-normal" id="rr-status-pill">Bình thường</span>
+          </div>
+
+          <div class="vital-gauge-body">
+            <div class="vital-main-val">
+              <span class="value-digits font-mono" id="val-resp-rate">--</span>
+              <span class="value-unit font-mono">RPM</span>
+            </div>
+            <div class="vital-sub-stats">
+              <div class="sub-stat"><span class="sub-lbl">Tần số:</span> <strong id="rr-freq">0.27 Hz</strong></div>
+              <div class="sub-stat"><span class="sub-lbl">Độ ổn định:</span> <strong id="rr-snr">Cao</strong></div>
+              <div class="sub-stat"><span class="sub-lbl">Chu kỳ:</span> <strong id="rr-period">3.7s</strong></div>
+            </div>
+          </div>
+
+          <div class="vital-progress-bar-wrap">
+            <div class="vital-progress-bar rr-gradient" id="rr-progress-bar" style="width: 50%;"></div>
+          </div>
+          <div class="progress-labels">
+            <span>6 RPM (Chậm)</span>
+            <span>Khoảng chuẩn (12-20)</span>
+            <span>32 RPM (Nhanh)</span>
+          </div>
+        </div>
+
+        <!-- 3. Chest Motion Breathing (Nhịp thở cử động ngực YOLO) -->
+        <div class="vital-card card-chest-motion">
+          <div class="vital-card-header">
+            <div class="vital-title-wrap">
+              <span class="vital-icon-circle icon-motion">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+                  <circle cx="12" cy="7" r="4"/>
+                  <path d="M5.5 21l3-7 3.5 2 3.5-2 3 7"/>
+                </svg>
+              </span>
+              <div>
+                <h2 class="vital-name">NHỊP THỞ CỬ ĐỘNG NGỰC</h2>
+                <span class="vital-method">YOLO Pose + Optical Flow</span>
+              </div>
+            </div>
+            <span class="status-pill pill-normal" id="chest-status-pill">Đồng bộ</span>
+          </div>
+
+          <div class="vital-gauge-body">
+            <div class="vital-main-val">
+              <span class="value-digits font-mono" id="val-chest-bpm">--</span>
+              <span class="value-unit font-mono">BPM</span>
+            </div>
+            <div class="vital-sub-stats">
+              <div class="sub-stat"><span class="sub-lbl">Nguồn đo:</span> <strong id="chest-source">YOLO Pose</strong></div>
+              <div class="sub-stat"><span class="sub-lbl">Chênh lệch:</span> <strong id="chest-diff">&Delta; 0.0</strong></div>
+              <div class="sub-stat"><span class="sub-lbl">Khớp tín hiệu:</span> <strong class="text-emerald">98%</strong></div>
+            </div>
+          </div>
+
+          <div class="vital-progress-bar-wrap">
+            <div class="vital-progress-bar chest-gradient" id="chest-progress-bar" style="width: 50%;"></div>
+          </div>
+          <div class="progress-labels">
+            <span>10 BPM (Thấp)</span>
+            <span>Ngưỡng giám sát</span>
+            <span>24 BPM (Cao)</span>
+          </div>
+        </div>
+
+        <!-- 4. Clinical Condition Evaluation -->
+        <div class="vital-card card-clinical">
+          <div class="vital-card-header">
+            <div class="vital-title-wrap">
+              <span class="vital-icon-circle icon-shield">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+              </span>
+              <div>
+                <h2 class="vital-name">ĐÁNH GIÁ LÂM SÀNG</h2>
+                <span class="vital-method">Tích hợp AI chẩn đoán sơ bộ</span>
+              </div>
+            </div>
+            <span class="status-pill pill-normal" id="clinical-status-pill">Bình thường</span>
+          </div>
+
+          <div class="clinical-body">
+            <div class="health-index-wrap">
+              <div class="health-score-circle">
+                <span class="score-val font-mono" id="health-score">96</span>
+                <span class="score-lbl">ĐIỂM SQI</span>
+              </div>
+              <div class="health-notes">
+                <p class="health-summary" id="health-summary">Sinh hiệu ổn định, nhịp tim và nhịp thở trong giới hạn sinh lý bình thường.</p>
+                <div class="last-sync-row">
+                  <span>Cập nhật: <strong id="last-updated-text">--:--:--</strong></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="quick-action-strip">
+            <button class="btn-action-small" id="btn-quick-export" title="Xuất CSV">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất CSV
+            </button>
+            <button class="btn-action-small" id="btn-quick-simulate" title="Test mô phỏng">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Thử nghiệm
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Realtime Oscilloscope & Waveform Monitoring Section -->
+      <div class="oscilloscope-grid">
+        
+        <!-- Cardiac Pulse (BVP) Waveform -->
+        <div class="glass-card wave-card">
+          <div class="wave-card-header">
+            <div class="wave-title-group">
+              <span class="wave-indicator bvp-dot"></span>
+              <div>
+                <h3 class="wave-card-title">Sóng Xung Mạch BVP (Photoplethysmogram)</h3>
+                <p class="wave-card-desc">Tín hiệu hấp thụ mao mạch da mặt sau giải thuật CHROM & lọc dải tần [0.75 - 2.5 Hz]</p>
+              </div>
+            </div>
+            <div class="wave-controls">
+              <span class="badge-tag">Bandpass Butterworth</span>
+              <button class="icon-btn-sm" id="btn-reset-bvp-zoom" title="Reset tỷ lệ sóng">Reset</button>
+            </div>
+          </div>
+          <div class="canvas-container">
+            <canvas id="chart-bvp-wave" height="120"></canvas>
+          </div>
+        </div>
+
+        <!-- Respiratory Waveform -->
+        <div class="glass-card wave-card">
+          <div class="wave-card-header">
+            <div class="wave-title-group">
+              <span class="wave-indicator resp-dot"></span>
+              <div>
+                <h3 class="wave-card-title">Sóng Hô Hấp Chu Kỳ (Respiratory Waveform)</h3>
+                <p class="wave-card-desc">Tín hiệu biến thiên biên độ tuần hoàn lồng ngực & màu da mặt [0.1 - 0.5 Hz]</p>
+              </div>
+            </div>
+            <div class="wave-controls">
+              <span class="badge-tag">Dải thở 6 - 30 RPM</span>
+              <button class="icon-btn-sm" id="btn-reset-resp-zoom" title="Reset tỷ lệ sóng">Reset</button>
+            </div>
+          </div>
+          <div class="canvas-container">
+            <canvas id="chart-resp-wave" height="120"></canvas>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- Live Alerts & Event Log Strip -->
+      <div class="glass-card alert-log-card">
+        <div class="alert-log-header">
+          <div class="alert-title-wrap">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            <h3 class="alert-card-title">Nhật ký Giám sát & Cảnh báo Sự kiện</h3>
+          </div>
+          <span class="alert-counter-badge" id="alert-counter-badge">0 sự kiện</span>
+        </div>
+        <div class="alert-list-container" id="alert-events-list">
+          <div class="alert-empty-placeholder">Chưa có sự kiện bất thường. Hệ thống đang giám sát liên tục...</div>
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 2: TRỰC QUAN HÓA rPPG KHUÔN MẶT (CAMERA & SPECTRUM)
+         ==================================================================== -->
+    <section class="tab-content" id="tab-rppg">
+      <div class="rppg-view-grid">
+
+        <!-- Left: Live Video Feed Canvas with Overlays -->
+        <div class="glass-card video-card">
+          <div class="video-card-header">
+            <div class="video-title-wrap">
+              <span class="live-recording-badge"><span class="rec-dot"></span> LIVE FEED</span>
+              <div>
+                <h3 class="video-header-title">Luồng Video Phân tích rPPG / rBBG</h3>
+                <p class="video-header-sub">MediaPipe Face Mesh (468 3D) + Affine Warping trán và 2 má</p>
+              </div>
+            </div>
+            
+            <div class="video-source-selector">
+              <label for="select-rppg-mode">Nguồn:</label>
+              <select id="select-rppg-mode" class="custom-select">
+                <option value="webcam" selected>Webcam trực tiếp (Camera laptop)</option>
+                <option value="simulation">Mô phỏng tương tác (demo_face.jpg)</option>
+                <option value="demo_video">Video mẫu chuẩn (demo_video.mp4)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="video-frame-wrapper">
+            <img id="rppg-video-stream" src="" alt="Luồng video rPPG trực tiếp" />
+            <div class="video-hud-overlay">
+              <div class="hud-item"><span class="hud-k">FPS:</span> <span class="hud-v" id="hud-fps">30.0</span></div>
+              <div class="hud-item"><span class="hud-k">ROI:</span> <span class="hud-v" id="hud-roi">Trán &amp; 2 Má</span></div>
+              <div class="hud-item"><span class="hud-k">Góc nghiêng:</span> <span class="hud-v" id="hud-tilt">0.0&deg;</span></div>
+            </div>
+          </div>
+
+          <!-- Quick Controls Below Video -->
+          <div class="video-action-bar">
+            <div class="action-btn-group">
+              <button class="btn-tool" id="btn-toggle-facemesh">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span>Bật/Tắt Face Mesh</span>
+              </button>
+              <button class="btn-tool" id="btn-roi-mode">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                <span id="btn-roi-label">Vùng: Cả trán &amp; má</span>
+              </button>
+            </div>
+            <div class="action-btn-group">
+              <button class="btn-tool" id="btn-capture-snapshot">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <span>Lưu ảnh HUD</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Interactive Simulator Panel & FFT Spectrum -->
+        <div class="rppg-side-column">
+          
+          <!-- Interactive Simulator Controls -->
+          <div class="glass-card control-card">
+            <div class="control-header">
+              <h3 class="control-title">Bảng Thử nghiệm Mô phỏng Tương tác</h3>
+              <span class="badge-tag live-tag">Tác động tức thời</span>
+            </div>
+            <p class="control-desc">Kéo thanh trượt để phát xung tần số tim & nhịp thở vi mô vào video khuôn mặt và quan sát phản hồi của giải thuật CHROM & FFT.</p>
+
+            <div class="slider-control-group">
+              <div class="slider-label-row">
+                <span class="slider-title text-rose">Nhịp tim mục tiêu (Simulated HR):</span>
+                <span class="slider-val font-mono" id="val-sim-hr">74 BPM</span>
+              </div>
+              <input type="range" class="custom-range range-heart" id="slider-sim-hr" min="45" max="150" value="74" step="1">
+              <div class="slider-ticks">
+                <span>45 BPM</span>
+                <span>75 BPM (Chuẩn)</span>
+                <span>120 BPM</span>
+                <span>150 BPM</span>
+              </div>
+            </div>
+
+            <div class="slider-control-group">
+              <div class="slider-label-row">
+                <span class="slider-title text-emerald">Nhịp thở mục tiêu (Simulated RR):</span>
+                <span class="slider-val font-mono" id="val-sim-rr">16 RPM</span>
+              </div>
+              <input type="range" class="custom-range range-resp" id="slider-sim-rr" min="8" max="35" value="16" step="1">
+              <div class="slider-ticks">
+                <span>8 RPM</span>
+                <span>16 RPM (Chuẩn)</span>
+                <span>25 RPM</span>
+                <span>35 RPM</span>
+              </div>
+            </div>
+
+            <div class="preset-buttons-row">
+              <span class="preset-label">Kịch bản nhanh:</span>
+              <button class="btn-preset" data-hr="72" data-rr="16">Bình thường (72/16)</button>
+              <button class="btn-preset" data-hr="115" data-rr="26">Vận động (115/26)</button>
+              <button class="btn-preset" data-hr="52" data-rr="11">Nghỉ ngơi (52/11)</button>
+            </div>
+          </div>
+
+          <!-- FFT Frequency Spectrum Card -->
+          <div class="glass-card fft-card">
+            <div class="fft-card-header">
+              <div>
+                <h3 class="fft-card-title">Phổ Tần số Năng lượng (FFT Power Spectrum)</h3>
+                <p class="fft-card-desc">Xác định đỉnh năng lượng cực đại: f<sub>tim</sub> [0.75-2.5Hz] &amp; f<sub>thở</sub> [0.1-0.5Hz]</p>
+              </div>
+            </div>
+            <div class="canvas-container">
+              <canvas id="chart-fft-spectrum" height="150"></canvas>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 3: GIÁM SÁT NGỰC & CỬ ĐỘNG (CHEST MOTION & YOLO POSE)
+         ==================================================================== -->
+    <section class="tab-content" id="tab-chest">
+      <div class="rppg-view-grid">
+
+        <!-- Left: Live Chest Motion Video Feed Canvas with YOLO Pose Overlays -->
+        <div class="glass-card video-card">
+          <div class="video-card-header">
+            <div class="video-title-wrap">
+              <span class="live-recording-badge" style="background: rgba(99, 102, 241, 0.15); border-color: rgba(99, 102, 241, 0.3); color: var(--motion);"><span class="rec-dot" style="background: var(--motion);"></span> LIVE POSE FEED</span>
+              <div>
+                <h3 class="video-header-title">Luồng Video Phân tích Cử động Ngực (YOLO Pose)</h3>
+                <p class="video-header-sub">YOLO11 Pose Estimation (17 keypoints) &amp; Gunnar Farneback Optical Flow</p>
+              </div>
+            </div>
+            
+            <div class="video-source-selector">
+              <label for="select-chest-source">Nguồn:</label>
+              <select id="select-chest-source" class="custom-select">
+                <option value="webcam" selected>Webcam Laptop (Mặc định)</option>
+                <option value="esp32">ESP32-CAM WiFi Stream</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="video-frame-wrapper">
+            <img id="chest-video-stream" src="" alt="Luồng video Pose ngực trực tiếp" />
+            <div class="video-hud-overlay">
+              <div class="hud-item"><span class="hud-k">MODEL:</span> <span class="hud-v" style="color: var(--motion);">YOLO11-Pose</span></div>
+              <div class="hud-item"><span class="hud-k">FPS:</span> <span class="hud-v" id="hud-chest-fps">30.0</span></div>
+              <div class="hud-item"><span class="hud-k">NGỰC (BPM):</span> <span class="hud-v" id="hud-chest-bpm">16.0</span></div>
+            </div>
+          </div>
+
+          <!-- Quick Controls Below Video -->
+          <div class="video-action-bar">
+            <div class="action-btn-group">
+              <button class="btn-tool" id="btn-toggle-chest-skeleton">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><line x1="12" y1="8" x2="12" y2="15"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="12" y1="15" x2="9" y2="21"/><line x1="12" y1="15" x2="15" y2="21"/></svg>
+                <span>Bật/Tắt Khung xương Pose</span>
+              </button>
+              <button class="btn-tool" id="btn-toggle-chest-roi">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>
+                <span>Bật/Tắt Vùng ngực (Chest ROI)</span>
+              </button>
+            </div>
+            <div class="action-btn-group">
+              <button class="btn-tool" id="btn-capture-chest-snapshot">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                <span>Lưu ảnh HUD</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Realtime Chest Motion Waveform & Controls -->
+        <div class="rppg-side-column">
+
+          <!-- Realtime Chest Motion Waveform Card -->
+          <div class="glass-card wave-card" style="padding: 20px;">
+            <div class="wave-card-header">
+              <div class="wave-title-group">
+                <span class="wave-indicator" style="background: var(--motion); box-shadow: 0 0 10px var(--motion);"></span>
+                <div>
+                  <h3 class="wave-card-title">Biên độ Chuyển động Ngực dY</h3>
+                  <p class="wave-card-desc">Dao động nâng hạ lồng ngực theo trục dọc (Farneback Flow)</p>
+                </div>
+              </div>
+            </div>
+            <div class="canvas-container">
+              <canvas id="chart-chest-wave" height="150"></canvas>
+            </div>
+          </div>
+
+          <!-- ESP32-CAM Connection Manager Panel -->
+          <div class="glass-card control-card" style="padding: 20px;">
+            <div class="control-header">
+              <h3 class="control-title">Nguồn luồng ESP32-CAM (IoT WiFi)</h3>
+              <span class="badge-tag">Tùy chọn</span>
+            </div>
+            <p class="control-desc">Chuyển sang nguồn ESP32-CAM để giám sát không dây bệnh nhân từ xa qua mạng nội bộ.</p>
+            <div class="esp32-row" style="margin-bottom: 10px;">
+              <input type="text" class="custom-input font-mono" id="input-esp32-url" placeholder="http://192.168.1.50/stream" value="http://192.168.143.249/stream">
+              <button class="btn-primary" id="btn-test-esp32">Kết nối</button>
+            </div>
+            <p class="esp32-hint">Mã nguồn nạp chip: <code class="font-mono">hardware/esp32cam_stream.ino</code></p>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- Pipeline Flow & Worker Launch info below video -->
+      <div class="glass-card chest-card" style="margin-top: 24px;">
+        <div class="chest-card-header">
+          <div>
+            <h3 class="chest-title">Quy trình Thuật toán Phân tích Cử động Ngực</h3>
+            <p class="chest-desc">5 bước xử lý từ khung hình camera tới chỉ số nhịp thở chuẩn hóa</p>
+          </div>
+          <span class="badge-tag">Mô hình: yolo11n-pose.pt</span>
+        </div>
+
+        <div class="pipeline-flow-box">
+          <div class="flow-step">
+            <div class="flow-num">1</div>
+            <div class="flow-text"><strong>Webcam Laptop</strong><p>Khung hình 640x480 @ 30FPS</p></div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-num">2</div>
+            <div class="flow-text"><strong>YOLO Pose</strong><p>17 điểm tọa độ khung xương</p></div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-num">3</div>
+            <div class="flow-text"><strong>Chest ROI</strong><p>Khóa cứng ROI chống rung</p></div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-num">4</div>
+            <div class="flow-text"><strong>Farneback Flow</strong><p>Tính vector chuyển động dY</p></div>
+          </div>
+          <div class="flow-arrow">&rarr;</div>
+          <div class="flow-step">
+            <div class="flow-num">5</div>
+            <div class="flow-text"><strong>Lọc dải tần</strong><p>Bandpass 0.1-0.5Hz &rarr; BPM</p></div>
+          </div>
+        </div>
+
+        <!-- Worker launch info -->
+        <div class="worker-launch-box">
+          <h4 class="worker-launch-title">Khởi chạy Worker đo nhịp thở độc lập (nếu cần):</h4>
+          <div class="worker-btns-row">
+            <div class="worker-card-action">
+              <h5>Webcam Laptop Worker (Standalone CLI)</h5>
+              <p>Khởi chạy Worker sử dụng camera laptop có cửa sổ đồ thị matplotlib.</p>
+              <code class="font-mono">python chest_breathing/webcam_worker.py</code>
+            </div>
+            <div class="worker-card-action">
+              <h5>ESP32-CAM Worker (Standalone CLI)</h5>
+              <p>Khởi chạy Worker nhận luồng MJPEG từ ESP32 qua WiFi.</p>
+              <code class="font-mono">python chest_breathing/breathing_worker.py</code>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 4: LỊCH SỬ & BÁO CÁO DỮ LIỆU (DATA RECORDS MANAGEMENT)
+         ==================================================================== -->
+    <section class="tab-content" id="tab-records">
+      <div class="glass-card records-card">
+        
+        <!-- Table Action Bar -->
+        <div class="records-header">
+          <div>
+            <h3 class="records-title">Nhật ký Đo lường Sinh hiệu Chi tiết</h3>
+            <p class="records-desc">Toàn bộ dữ liệu nhịp tim và nhịp thở được đồng bộ giữa CSDL cục bộ và Firebase</p>
+          </div>
+          
+          <div class="records-actions">
+            <!-- Filter Type -->
+            <select id="filter-metric-type" class="custom-select">
+              <option value="all">Tất cả nguồn dữ liệu</option>
+              <option value="rppg">Chỉ rPPG khuôn mặt</option>
+              <option value="chest">Chỉ cử động ngực</option>
+            </select>
+
+            <!-- Export CSV -->
+            <a href="/api/export/csv" class="btn-primary" id="btn-export-csv" download>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Xuất Báo cáo CSV
+            </a>
+
+            <!-- Clear Records -->
+            <button class="btn-danger-outline" id="btn-clear-history">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Xóa Lịch sử
+            </button>
+          </div>
+        </div>
+
+        <!-- Historical Trend Chart -->
+        <div class="trend-chart-container">
+          <div class="chart-header-row">
+            <h4 class="trend-title">Đồ thị Xu hướng Lịch sử Đo lường</h4>
+            <button class="icon-btn-sm" id="btn-reset-history-zoom">Reset Zoom</button>
+          </div>
+          <canvas id="chart-history" height="100"></canvas>
+          <p class="chart-subtext">Cuộn chuột để zoom &bull; Nhấp giữ để kéo di chuyển &bull; Nhấp đúp để đặt lại</p>
+        </div>
+
+        <!-- Data Table -->
+        <div class="table-responsive">
+          <table class="data-table" id="table-vitals">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Thời gian</th>
+                <th>Nhịp tim (BPM)</th>
+                <th>Nhịp thở rPPG (RPM)</th>
+                <th>Nhịp thở ngực (BPM)</th>
+                <th>Nguồn đo</th>
+                <th>Trạng thái</th>
+                <th>Ghi chú</th>
+              </tr>
+            </thead>
+            <tbody id="table-vitals-body">
+              <tr>
+                <td colspan="8" class="text-center py-4">Đang tải dữ liệu...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 5: CÀI ĐẶT HỆ THỐNG & NGƯỠNG CẢNH BÁO (SETTINGS & THRESHOLDS)
+         ==================================================================== -->
+    <section class="tab-content" id="tab-settings">
+      <div class="settings-grid">
+
+        <!-- 1. Thresholds Card -->
+        <div class="glass-card settings-card">
+          <div class="settings-header">
+            <h3 class="settings-title">Cấu hình Ngưỡng Cảnh báo Sinh lý</h3>
+            <p class="settings-desc">Hệ thống sẽ phát chuông cảnh báo và gửi email khi chỉ số vượt ngoài các ngưỡng này.</p>
+          </div>
+
+          <form id="form-thresholds" class="settings-form">
+            <div class="form-group-row">
+              <div class="form-field">
+                <label for="set-hr-low">Nhịp tim Tối thiểu (HR Min)</label>
+                <div class="input-unit-wrap">
+                  <input type="number" id="set-hr-low" class="custom-input font-mono" value="50" min="30" max="80">
+                  <span class="unit-tag font-mono">BPM</span>
+                </div>
+              </div>
+              <div class="form-field">
+                <label for="set-hr-high">Nhịp tim Tối đa (HR Max)</label>
+                <div class="input-unit-wrap">
+                  <input type="number" id="set-hr-high" class="custom-input font-mono" value="100" min="80" max="200">
+                  <span class="unit-tag font-mono">BPM</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group-row">
+              <div class="form-field">
+                <label for="set-rr-low">Nhịp thở Tối thiểu (RR Min)</label>
+                <div class="input-unit-wrap">
+                  <input type="number" id="set-rr-low" class="custom-input font-mono" value="10" min="4" max="18">
+                  <span class="unit-tag font-mono">RPM</span>
+                </div>
+              </div>
+              <div class="form-field">
+                <label for="set-rr-high">Nhịp thở Tối đa (RR Max)</label>
+                <div class="input-unit-wrap">
+                  <input type="number" id="set-rr-high" class="custom-input font-mono" value="24" min="18" max="40">
+                  <span class="unit-tag font-mono">RPM</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-checkbox-row">
+              <label class="toggle-switch">
+                <input type="checkbox" id="set-sound-alert" checked>
+                <span class="slider round"></span>
+              </label>
+              <div class="toggle-info">
+                <strong>Bật còi cảnh báo âm thanh (Audio Beep)</strong>
+                <p>Phát âm thanh cảnh báo trên loa máy tính khi phát hiện sinh hiệu bất thường.</p>
+              </div>
+              <button type="button" class="btn-tool" id="btn-test-sound">Thử âm thanh</button>
+            </div>
+
+            <div class="form-checkbox-row">
+              <label class="toggle-switch">
+                <input type="checkbox" id="set-email-alert">
+                <span class="slider round"></span>
+              </label>
+              <div class="toggle-info">
+                <strong>Gửi Email cảnh báo (SMTP Gmail)</strong>
+                <p>Tự động gửi email thông báo kèm ảnh chụp thời điểm phát hiện nhịp thở bất thường.</p>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn-primary">Lưu Cấu hình Ngưỡng</button>
+              <span class="save-toast hidden" id="save-toast">Đã lưu thành công!</span>
+            </div>
+          </form>
+        </div>
+
+        <!-- 2. Diagnostics & Information Card -->
+        <div class="glass-card settings-card">
+          <div class="settings-header">
+            <h3 class="settings-title">Thông tin &amp; Chẩn đoán Hệ thống</h3>
+            <p class="settings-desc">Kiểm tra trạng thái kết nối các module phần mềm và phần cứng.</p>
+          </div>
+
+          <div class="diag-list">
+            <div class="diag-item">
+              <span class="diag-label">Engine rPPG Khuôn mặt</span>
+              <span class="diag-badge badge-active">Hoạt động (MediaPipe + CHROM)</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">Engine Cử động Ngực</span>
+              <span class="diag-badge badge-active">Sẵn sàng (YOLO11n Pose)</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">Cơ sở Dữ liệu Cục bộ</span>
+              <span class="diag-badge badge-active font-mono">SQLite (vital_signs.db)</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">Firebase Cloud RTDB</span>
+              <span class="diag-badge badge-ready font-mono" id="diag-firebase">Sẵn sàng kết nối</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">Máy chủ Backend</span>
+              <span class="diag-badge badge-active font-mono">Flask 3.1.3 (Port 5000)</span>
+            </div>
+            <div class="diag-item">
+              <span class="diag-label">Luồng SSE Realtime</span>
+              <span class="diag-badge badge-active" id="diag-sse">Đang truyền dữ liệu</span>
+            </div>
+          </div>
+
+          <div class="about-box">
+            <h4>Dự án Hợp nhất VitalsHub</h4>
+            <p>Hợp nhất thành công hai dự án: <strong>Đo nhịp tim rPPG MediaPipe CHROM</strong> và <strong>Giám sát nhịp thở YOLO Pose Motion Tracking</strong> vào thư mục tập trung <code class="font-mono">d:\aaaaa\son</code>.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- External Libraries: Chart.js, HammerJS, Zoom Plugin -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8/hammer.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+
+  <!-- Main Unified Dashboard Controller -->
+  <script src="{{ url_for('static', filename='js/dashboard.js') }}?v=4"></script>
+</body>
+
+</html>

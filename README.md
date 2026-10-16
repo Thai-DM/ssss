@@ -1,140 +1,179 @@
-# HỆ THỐNG ĐO NHỊP TIM & NHỊP THỞ QUA VIDEO (rPPG / rBBG)
+# VitalsHub - HỆ THỐNG GIÁM SÁT SINH HIỆU KHÔNG TIẾP XÚC TỔNG HỢP (rPPG & YOLO CHEST POSE)
 
-Dự án tái lập toàn bộ thuật toán và kiến trúc từ tài liệu **`rBBG.docx`**, sử dụng mô hình **MediaPipe Face Mesh (468 điểm tọa độ 3D)** kết hợp thuật toán **CHROM (Chrominance-based method by De Haan & Jeanne)** để đo lường không tiếp xúc các chỉ số sinh trắc học:
-- **5.1. Nhịp tim (Heart Rate - HR)**: Đơn vị **BPM** (nhịp/phút).
-- **5.2. Nhịp thở (Respiration Rate - RR)**: Đơn vị **RPM** (lần/phút).
-
----
-
-## 1. Cơ sở lý thuyết & Quy trình thuật toán từ `rBBG.docx`
-
-### Bước 1: Phát hiện khuôn mặt & Cắt vùng ROI (Region of Interest)
-- Sử dụng **MediaPipe Face Mesh** trích xuất 468 điểm tọa độ 3D khuôn mặt.
-- **Vùng trán (Forehead ROI)**: Lấy vùng nằm giữa 2 lông mày kéo dài lên đường viền tóc.
-- **Hai bên má (Cheek ROIs)**: Lấy vùng mô thịt dưới mắt, tránh mắt, viền mũi và vùng miệng.
-- **Khung bao nghiêng ôm sát (Oriented Bounding Box)**: Mạng nhận diện mặt nạ da mặt được quy đổi thành hình chữ nhật xoay với 5 tham số:
-  $$\text{ROI} = (x_c, y_c, w, h, \theta)$$
-  Trong đó: $(x_c, y_c)$ là tọa độ tâm, $w$ là chiều dài, $h$ là chiều rộng, và $\theta$ là góc nghiêng.
-
-### Bước 2: Chuẩn hóa ROI (Affine Warping)
-- Do khuôn mặt có thể nghiêng một góc $\theta$, hệ thống xây dựng ma trận biến đổi Affine $M$ từ góc $\theta$ và tâm $(x_c, y_c)$:
-  $$M = \begin{bmatrix} \cos\theta & -\sin\theta & x_c' \\ \sin\theta & \cos\theta & y_c' \end{bmatrix}$$
-- Dùng `cv2.warpAffine` xoay ROI về trục ngang và chuẩn hóa kích thước về dạng chữ nhật phẳng $w \times h$.
-
-### Bước 3: Thu thập tín hiệu màu theo thời gian
-- Tại mỗi khung hình $t$, tính giá trị cường độ sáng trung bình cho từng kênh màu $R, G, B$:
-  $$R(t) = \frac{1}{|R|} \sum_{(x,y) \in R} I_R(x, y, t)$$
-  $$G(t) = \frac{1}{|R|} \sum_{(x,y) \in R} I_G(x, y, t)$$
-  $$B(t) = \frac{1}{|R|} \sum_{(x,y) \in R} I_B(x, y, t)$$
-  Với $|R|$ là tổng số pixel trong vùng ROI, $I$ là cường độ sáng.
-- Sau $N$ khung hình (cửa sổ thời gian trượt từ 8 - 10 giây), thu được 3 chuỗi tín hiệu 1D: $S_R, S_G, S_B$ có độ dài $N$.
-
-### Bước 4: Tách tín hiệu sóng mạch (BVP) bằng Thuật toán CHROM
-Thuật toán dựa trên lý thuyết sắc độ, khai thác sự khác biệt về độ hấp thụ ánh sáng của huyết sắc tố (hemoglobin) ở các bước sóng để triệt tiêu nhiễu chuyển động và biến thiên ánh sáng:
-1. **Làm mịn sơ bộ**: Đưa chuỗi $R(t), G(t), B(t)$ qua bộ lọc làm mịn để loại bỏ nhiễu tần số cao của cảm biến camera $\to R_f(t), G_f(t), B_f(t)$.
-2. **Chuẩn hóa giá trị trung bình động**:
-   $$R_n(t) = \frac{R_f(t)}{\mu_R}, \quad G_n(t) = \frac{G_f(t)}{\mu_G}, \quad B_n(t) = \frac{B_f(t)}{\mu_B}$$
-   Với $\mu_R, \mu_G, \mu_B$ là giá trị trung bình toàn chuỗi màu trong cửa sổ $N$ khung hình.
-3. **Chiếu sắc độ vuông góc với phản xạ gương (Specular reflection)**:
-   $$X(t) = 3 \cdot R_n(t) - 2 \cdot G_n(t)$$
-   $$Y(t) = 1.5 \cdot R_n(t) + 1.5 \cdot G_n(t) - 3 \cdot B_n(t)$$
-4. **Cân bằng biên độ và tổng hợp BVP**:
-   $$\sigma_X = \sqrt{\frac{1}{N} \sum_{t=1}^N (X(t) - \bar{X})^2}, \quad \sigma_Y = \sqrt{\frac{1}{N} \sum_{t=1}^N (Y(t) - \bar{Y})^2}$$
-   $$\alpha = \frac{\sigma_X}{\sigma_Y}$$
-   $$S_{\text{CHROM}}(t) = X(t) - \alpha \cdot Y(t)$$
-
-### Bước 5: Tính toán chỉ số sinh trắc học
-- **5.1. Đo nhịp tim (Heart Rate - HR)**:
-  - Cho $S_{\text{CHROM}}(t)$ qua bộ lọc Butterworth Bandpass Filter dải $[0.75\,\text{Hz} - 2.5\,\text{Hz}]$ (tương ứng 45 - 150 BPM).
-  - Áp dụng biến đổi Fourier (FFT), tìm tần số $f_{\text{heart}}$ có biên độ lớn nhất:
-    $$\text{HR (BPM)} = f_{\text{heart}} \times 60 \quad (\text{nhịp/phút})$$
-- **5.2. Đo nhịp thở (Respiration Rate - RR)**:
-  - Cho $S_{\text{CHROM}}(t)$ thô qua bộ lọc Bandpass dải tần số thấp $[0.1\,\text{Hz} - 0.5\,\text{Hz}]$ (tương ứng 6 - 30 lần/phút).
-  - Áp dụng biến đổi Fourier (FFT), tìm tần số $f_{\text{resp}}$ có biên độ lớn nhất:
-    $$\text{RR (RPM)} = f_{\text{resp}} \times 60 \quad (\text{lần/phút})$$
+Dự án hợp nhất toàn diện 2 hệ thống đo sinh hiệu không tiếp xúc:
+1. **Facial rPPG / rBBG Engine**: Đo nhịp tim (**Heart Rate - HR BPM**) và nhịp thở (**Respiration Rate - RR RPM**) qua phân tích dao động quang phổ mao mạch khuôn mặt sử dụng **MediaPipe Face Mesh (468 điểm 3D)**, **Affine Warping** và thuật toán sắc độ **CHROM (De Haan & Jeanne)**.
+2. **Chest Motion Tracking Engine (YOLO Pose)**: Đo nhịp thở (**Breathing Rate - BPM**) qua nhận diện chuyển động lồng ngực sử dụng **YOLO11 Pose Estimation**, khóa cứng vùng ngực (Chest ROI) và luồng quang học **Gunnar Farneback Optical Flow**.
+3. **Unified Real-time Dashboard**: Bảng điều khiển trung tâm y tế hiện đại (Medical-grade Dark UI) hiển thị video streaming thời gian thực (MJPEG), biểu đồ sóng xung mạch BVP, sóng hô hấp, phổ tần số FFT, cảnh báo âm thanh lâm sàng và xuất báo cáo CSV.
 
 ---
 
-## 2. Cấu trúc thư mục mã nguồn
+## 1. Cấu trúc thư mục dự án sau khi hợp nhất (`son/`)
 
 ```
-d:\son/
-├── venv/                     # Môi trường ảo Python độc lập (Virtual Environment)
-├── rBBG.docx                 # Tài liệu mô tả yêu cầu gốc
-├── requirements.txt          # Danh sách thư viện phụ thuộc
-├── roi_extractor.py          # Module trích xuất FaceMesh & 5 tham số ROI, Affine warping
-├── chrom_processor.py        # Module thuật toán CHROM, bộ lọc Butterworth, FFT đo HR & RR
-├── rppg_pipeline.py          # Điều phối luồng dữ liệu trượt (Sliding Window), FPS động, EMA
-├── ui_visualizer.py          # Giao diện HUD chuyên nghiệp trên OpenCV (Oscilloscope, FFT plot)
-├── main.py                   # Chương trình chính (Hỗ trợ Webcam, Video file, Simulation)
-├── test_pipeline.py          # Bộ kiểm thử tự động (Unit Tests) độ chính xác thuật toán
-├── plot_signals.py           # Công cụ vẽ báo cáo phân tích tín hiệu chi tiết ra file ảnh PNG
-└── README.md                 # Tài liệu hướng dẫn sử dụng
+d:\aaaaa\son/
+├── backend/                             # Máy chủ Flask Backend & REST/SSE API
+│   ├── app.py                           # Ứng dụng Flask trung tâm phục vụ Dashboard & API
+│   ├── video_stream.py                  # Điều phối luồng video MJPEG & Pipeline rPPG
+│   ├── local_db.py                      # CSDL SQLite cục bộ (chạy độc lập 100% không cần setup)
+│   ├── alarm_manager.py                 # Bộ giám sát cảnh báo sinh hiệu & phân loại nguy cơ
+│   ├── email_sender.py                  # Module gửi email cảnh báo vi phạm qua SMTP Gmail
+│   ├── firebase_db.py                   # Module kết nối Firebase Realtime Database (Tùy chọn)
+│   ├── config.py                        # Cấu hình ngưỡng cảnh báo & email
+│   └── serviceAccountKey.json.example   # Mẫu cấu hình Firebase Service Account
+│
+├── dashboard/                           # Giao diện Web Dashboard thời gian thực (SPA)
+│   ├── templates/
+│   │   └── index.html                   # Giao diện HTML5 đa tab (Tổng quan, rPPG, Ngực, Lịch sử, Cài đặt)
+│   └── static/
+│       ├── css/style.css                # CSS thiết kế Dark Theme y tế, Glassmorphism, Neon glow
+│       └── js/dashboard.js              # JavaScript điều khiển SSE, đồ thị Chart.js, bộ tạo âm thanh
+│
+├── chest_breathing/                     # Module đo nhịp thở qua cử động lồng ngực (YOLO)
+│   ├── ai/
+│   │   ├── roi_extractor.py             # Trích xuất Chest ROI từ tọa độ vai & hông
+│   │   ├── motion_tracker.py            # Tính toán vector chuyển động Farneback
+│   │   ├── signal_filter.py             # Bộ lọc Butterworth Bandpass 0.1 - 0.5 Hz
+│   │   ├── breathing_rate.py            # Đếm đỉnh sóng (Peak finding) và tính BPM
+│   │   └── pose_detector.py
+│   ├── webcam_worker.py                 # Worker chạy trực tiếp qua Webcam laptop
+│   ├── breathing_worker.py              # Worker nhận luồng MJPEG từ ESP32-CAM qua WiFi
+│   ├── yolo11n-pose.onnx                # Trọng số mô hình YOLO Pose dạng ONNX tối ưu CPU
+│   └── yolo11n-pose.pt                  # Trọng số mô hình PyTorch
+│
+├── hardware/                            # Phần cứng IoT
+│   └── esp32cam_stream.ino              # Mã nguồn nạp vi điều khiển ESP32-CAM (Arduino IDE)
+│
+├── tests/                               # Bộ kiểm thử tự động (Unit Tests)
+│   ├── test_pipeline.py                 # Kiểm thử giải thuật rPPG CHROM & FFT
+│   ├── test_keypoint.py                 # Kiểm thử trích xuất điểm xương YOLO
+│   ├── test_pose.py
+│   └── test_roi.py
+│
+├── venv/                                # Môi trường ảo Python 3.9 đã cài đặt đủ thư viện
+├── chrom_processor.py                   # Module giải thuật CHROM, bộ lọc Butterworth & FFT
+├── roi_extractor.py                     # MediaPipe FaceMesh & Affine Warping trán và 2 má
+├── rppg_pipeline.py                     # Pipeline cửa sổ trượt (Sliding Window) thời gian thực
+├── ui_visualizer.py                     # Giao diện HUD trực quan trên OpenCV
+├── demo.py                              # Ứng dụng chạy demo OpenCV độc lập (Interactive/Webcam/Video)
+├── main.py                              # CLI phân tích video file, xuất CSV, xuất video
+├── demo_video.mp4                       # Video mẫu chuẩn phục vụ thử nghiệm
+├── demo_face.jpg                        # Ảnh mẫu chuẩn phục vụ mô phỏng tương tác
+├── requirements.txt                     # Danh sách toàn bộ thư viện phụ thuộc
+├── run_dashboard.bat                    # [1-CLICK] Khởi chạy máy chủ Web Dashboard
+├── run_webcam_breathing.bat             # [1-CLICK] Chạy worker đo nhịp thở ngực (Webcam)
+├── run_esp32_breathing.bat              # [1-CLICK] Chạy worker đo nhịp thở ngực (ESP32-CAM)
+├── run_demo.bat                         # Chạy demo rPPG video mẫu
+├── run_interactive.bat                  # Chạy demo rPPG tương tác phím mũi tên
+└── run_webcam.bat                       # Chạy demo rPPG webcam trực tiếp
 ```
 
 ---
 
-## 3. Hướng dẫn cài đặt & Kích hoạt Môi trường ảo (`venv`)
+## 2. Hướng dẫn khởi chạy nhanh (Quick Start)
 
-Môi trường ảo `venv` đã được khởi tạo sẵn tại `d:\son\venv`.
-
-### Kích hoạt môi trường ảo trong PowerShell:
-```powershell
-.\venv\Scripts\Activate.ps1
+### Cách 1: Khởi chạy Web Dashboard tổng hợp (Khuyên dùng)
+Chỉ cần nhấp đúp vào file:
 ```
-*(Nếu gặp thông báo về Execution Policy trong PowerShell, chạy lệnh: `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`)*
+run_dashboard.bat
+```
+Hoặc chạy bằng dòng lệnh PowerShell:
+```powershell
+.\venv\Scripts\python backend\app.py
+```
+Trình duyệt sẽ tự động mở tại địa chỉ: **`http://localhost:5000`**
 
-### Hoặc trong Command Prompt (cmd.exe):
-```cmd
-venv\Scripts\activate.bat
+---
+
+### Cách 2: Khởi chạy Worker đo nhịp thở cử động ngực (Webcam laptop)
+Để bật thêm camera ngực gửi dữ liệu thời gian thực lên Dashboard:
+```
+run_webcam_breathing.bat
+```
+Hoặc:
+```powershell
+.\venv\Scripts\python chest_breathing\webcam_worker.py --api http://127.0.0.1:5000
 ```
 
 ---
 
-## 4. Hướng dẫn chạy chương trình & DEMO TEST
-
-### Cách 1: Chạy DEMO TEST Video Mẫu (Khuyên dùng thử nghiệm ngay)
-Chạy video mẫu `demo_video.mp4` đã được tích hợp sẵn dao động vi mạch máu (74 BPM, 16 RPM) và nắn xoay đầu Affine với giao diện HUD thời gian thực:
-```powershell
-.\venv\Scripts\python demo.py
+### Cách 3: Khởi chạy Worker đo nhịp thở qua ESP32-CAM
+Nạp file `hardware/esp32cam_stream.ino` vào board ESP32-CAM, sau đó chạy:
 ```
-*(Hoặc click đúp file **`run_demo.bat`**)*
+run_esp32_breathing.bat
+```
+Hoặc:
+```powershell
+.\venv\Scripts\python chest_breathing\breathing_worker.py --api http://127.0.0.1:5000 --espcam http://<IP_ESP32>/stream
+```
 
 ---
 
-### Cách 2: Chạy DEMO Tương tác Bằng Bàn phím (Interactive Demo)
-Bạn có thể tự tăng giảm nhịp tim và nhịp thở bằng phím mũi tên để xem thuật toán thích ứng trực tiếp trên màn hình:
-```powershell
-.\venv\Scripts\python demo.py --interactive
-```
-*(Hoặc click đúp file **`run_interactive.bat`**)*
-- Bấm **MŨI TÊN LÊN / XUỐNG**: Tăng / giảm nhịp tim mục tiêu (+/- 5 BPM).
-- Bấm **MŨI TÊN PHẢI / TRÁI**: Tăng / giảm nhịp thở mục tiêu (+/- 2 RPM).
+### Cách 4: Chạy Demo rPPG độc lập trên OpenCV Window
+- Chạy video mẫu chuẩn: `run_demo.bat`
+- Chạy tương tác phím mũi tên (Interactive): `run_interactive.bat` (Bấm `Mũi tên lên/xuống` để đổi nhịp tim, `Mũi tên trái/phải` để đổi nhịp thở).
+- Chạy qua webcam thật: `run_webcam.bat`
 
 ---
 
-### Cách 3: Chạy trực tiếp qua Webcam máy tính
-Đo nhịp tim và nhịp thở thực tế của chính bạn qua camera:
-```powershell
-.\venv\Scripts\python demo.py --webcam
-```
-*(Hoặc click đúp file **`run_webcam.bat`**)*
+## 3. Các tính năng nổi bật trên Web Dashboard
 
-> **Phím tắt trong cửa sổ hiển thị:**
-> - `Q` hoặc `ESC`: Dừng và thoát.
-> - `M`: Bật/tắt lưới tọa độ 3D MediaPipe Face Mesh.
-> - `R`: Reset lại bộ đệm tích lũy.
-> - `S`: Lưu ảnh chụp màn hình HUD (`demo_snapshot.png`).
-> - `1`, `2`, `3`: Đổi chế độ ROI (1: Cả trán và 2 má | 2: Chỉ trán | 3: Chỉ 2 má).
+1. **Tổng quan Sinh hiệu (Overview Hub)**:
+   - 4 Vital Hero Cards hiển thị lớn: **Nhịp tim (BPM)**, **Nhịp thở rPPG (RPM)**, **Nhịp thở ngực (BPM)**, **Đánh giá Lâm sàng**.
+   - Icon trái tim nhấp nháy đồng bộ theo tần số tim thực tế.
+   - 2 đồ thị sóng thời gian thực (Oscilloscope): Sóng xung mạch BVP tim và Sóng hô hấp tuần hoàn.
+   - Danh sách sự kiện cảnh báo trực tiếp (Live Alert Log).
 
-### Cách 4: Chạy bộ kiểm thử tự động (Unit Tests)
-Kiểm chứng tính đúng đắn của các công thức toán học và độ chính xác:
-```powershell
-.\venv\Scripts\python test_pipeline.py
-```
+2. **Trực quan hóa rPPG Khuôn mặt (Camera & Spectrum)**:
+   - Luồng video MJPEG khuôn mặt với lưới 3D Face Mesh và 3 khung trán + má.
+   - Bảng điều khiển mô phỏng tương tác: 2 thanh trượt điều chỉnh nhịp tim (45 - 150 BPM) và nhịp thở (8 - 35 RPM) với phản hồi thuật toán tức thì.
+   - Đồ thị phổ năng lượng FFT hiển thị đỉnh tần số $f_{\text{pulse}}$ và $f_{\text{resp}}$.
+   - Nút bật/tắt Face Mesh, đổi vùng ROI và chụp ảnh HUD.
 
-### Cách 5: Xuất biểu đồ báo cáo phân tích tín hiệu
-```powershell
-.\venv\Scripts\python plot_signals.py --csv test_simulation.csv --output rppg_analysis_report.png
-```
-# ssss
+3. **Giám sát Ngực & Cử động (Chest & YOLO)**:
+   - Sơ đồ kiến trúc 5 bước từ Camera -> YOLO Pose -> Chest ROI -> Farneback Optical Flow -> Lọc dải tần.
+   - Công cụ kiểm tra kết nối luồng ESP32-CAM IP.
+   - Hướng dẫn chạy các worker độc lập.
+
+4. **Lịch sử & Báo cáo Dữ liệu (Records Management)**:
+   - Đồ thị xu hướng biến thiên sinh hiệu theo thời gian (Hỗ trợ kéo và phóng to/thu nhỏ bằng chuột).
+   - Bảng dữ liệu chi tiết có bộ lọc theo nguồn đo (Tất cả, rPPG, Cử động ngực).
+   - Nút **Xuất Báo cáo CSV (Export CSV)** tải về file báo cáo lâm sàng chuẩn cho bác sĩ.
+   - Nút xóa lịch sử bản ghi.
+
+5. **Cài đặt Hệ thống & Ngưỡng Cảnh báo**:
+   - Tùy chỉnh ngưỡng nhịp tim tối thiểu / tối đa (HR Min/Max).
+   - Tùy chỉnh ngưỡng nhịp thở tối thiểu / tối đa (RR Min/Max).
+   - Bật/tắt còi báo động âm thanh (Audio Beep synthesizer) kèm nút kiểm tra âm thanh.
+   - Tích hợp email cảnh báo tự động gửi qua SMTP Gmail.
+   - Bảng chẩn đoán trạng thái hoạt động của từng module.
+
+---
+
+## 4. Danh mục API RESTful & Server-Sent Events (SSE)
+
+| Phương thức | Đường dẫn | Chức năng |
+| :--- | :--- | :--- |
+| `GET` | `/` | Giao diện Dashboard trung tâm (SPA) |
+| `GET` | `/api/video_feed/rppg` | Luồng video MJPEG khuôn mặt rPPG kèm HUD |
+| `GET` | `/api/latest` | Lấy chỉ số sinh hiệu mới nhất (HR, RR, Chest BPM, Status) |
+| `GET` | `/api/history` | Lấy danh sách lịch sử đo lường (`?limit=100&type=all`) |
+| `GET` | `/api/statistics` | Thống kê tổng hợp (Trung bình, Min, Max của HR & RR) |
+| `POST` | `/api/breathing` | Endpoint nhận BPM từ worker cử động ngực (tương thích 100% mã cũ) |
+| `POST` | `/api/vitals` | Endpoint nhận đầy đủ gói sinh hiệu tổng hợp |
+| `POST` | `/api/control/rppg/mode` | Đổi nguồn phát rPPG (`simulation`, `demo_video`, `webcam`) |
+| `POST` | `/api/control/rppg/params` | Điều chỉnh HR & RR mô phỏng từ thanh trượt UI |
+| `POST` | `/api/control/rppg/mesh` | Bật / tắt lưới Face Mesh 468 điểm |
+| `POST` | `/api/control/rppg/roi` | Đổi chế độ ROI (`all`, `forehead`, `cheeks`) |
+| `GET` / `POST` | `/api/settings` | Lấy hoặc cập nhật cấu hình ngưỡng cảnh báo |
+| `GET` | `/api/export/csv` | Tải xuống toàn bộ lịch sử bản ghi dạng file CSV |
+| `POST` | `/api/history/clear` | Xóa dữ liệu lịch sử đo lường |
+| `GET` | `/api/system/status` | Thông tin chẩn đoán trạng thái các thành phần hệ thống |
+| `GET` | `/api/stream` | Luồng sự kiện SSE (Server-Sent Events) đẩy dữ liệu liên tục |
+
+---
+
+## 5. Cơ chế lưu trữ CSDL Kép (Dual Storage)
+
+Hệ thống được thiết kế theo cơ chế dự phòng an toàn (Failover):
+1. **Cơ sở dữ liệu SQLite cục bộ (`backend/vital_signs.db`)**: Hoạt động mặc định, độc lập 100%, không cần kết nối mạng internet hay cấu hình tài khoản cloud. Đảm bảo hệ thống luôn ghi nhận số liệu ổn định.
+2. **Firebase Realtime Database**: Khi người dùng đặt file `serviceAccountKey.json` vào thư mục `backend/`, hệ thống sẽ tự động đồng bộ song song dữ liệu lên Firebase Cloud theo thời gian thực.

@@ -45,7 +45,7 @@ class FaceROIExtractor:
     def __init__(
         self,
         max_num_faces: int = 1,
-        refine_landmarks: bool = True,
+        refine_landmarks: bool = False,  # Tắt refine iris để tăng tốc độ gấp đôi trên CPU
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
     ):
