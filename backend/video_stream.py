@@ -634,6 +634,287 @@ class ChestStreamManager:
                 self.active_clients = max(0, self.active_clients - 1)
 
 
+# ==============================================================================
+# 4. UNIFIED STREAM MANAGER (1 CAMERA ĐO TOÀN BỘ: rPPG MẶT + CHEST POSE NGỰC)
+# ==============================================================================
+class UnifiedStreamManager:
+    """
+    Quản lý luồng video duy nhất All-in-One: trên cùng 1 camera đo đồng thời cả
+    Nhịp tim (HR), Nhịp thở khuôn mặt (RR) và Nhịp thở cử động lồng ngực (Chest BPM).
+    """
+
+    def __init__(self):
+        self.running = False
+        self.lock = threading.Lock()
+        self.thread: Optional[threading.Thread] = None
+
+        # Pipeline rPPG khuôn mặt
+        self.rppg_pipeline = RPPGPipeline(window_sec=8.0, target_fs=30.0, roi_mode="all")
+
+        # Pipeline nhận diện lồng ngực & Pose
+        model_path = os.path.join(CHEST_DIR, "yolo11n-pose.pt")
+        self.yolo_model = YOLO(model_path)
+        self.chest_roi_extractor = ChestROIExtractor()
+        self.motion_tracker = ChestMotionTracker(blur_kernel=(5, 5))
+
+        # Bộ đệm tín hiệu chuyển động ngực
+        self.motion_buffer = deque(maxlen=300)
+        self.motion_timestamps = deque(maxlen=300)
+
+        # Biến lưu trữ trạng thái
+        self.current_chest_roi = None
+        self.last_skeleton_kpts = None
+        self.last_seen_person_time = 0.0
+
+        self.current_hr = 72.0
+        self.current_rr = 16.0
+        self.current_chest_bpm = 16.0
+
+        self.show_skeleton = True
+        self.show_chest_roi = True
+        self.show_face_roi = True
+
+        self.latest_frame_jpeg: Optional[bytes] = None
+        self.latest_data: Dict[str, Any] = {
+            "heart_rate": 72.0,
+            "respiration_rate": 16.0,
+            "chest_bpm": 16.0,
+            "status": "Camera All-in-One Live",
+            "fps": 30.0,
+        }
+        self.active_clients = 0
+        self.last_db_save = time.time()
+
+    def start(self):
+        with self.lock:
+            if not self.running:
+                self.running = True
+                self.thread = threading.Thread(target=self._run_loop, daemon=True)
+                self.thread.start()
+
+    def stop(self):
+        with self.lock:
+            self.running = False
+
+    def get_latest_data(self) -> Dict[str, Any]:
+        with self.lock:
+            return dict(self.latest_data)
+
+    def _run_loop(self):
+        fps = 30.0
+        frame_time = 1.0 / fps
+        frame_idx = 0
+
+        SKELETON_PAIRS = [
+            (5, 6),   # shoulders
+            (5, 7), (7, 9),    # left arm
+            (6, 8), (8, 10),   # right arm
+            (5, 11), (6, 12),  # torso
+            (11, 12),          # hips
+        ]
+
+        while self.running:
+            if self.active_clients <= 0:
+                time.sleep(0.08)
+                continue
+
+            loop_start = time.perf_counter()
+            frame = camera_reader.get_frame()
+            if frame is None:
+                time.sleep(0.02)
+                continue
+
+            h, w = frame.shape[:2]
+            display_frame = frame.copy()
+
+            # 1. XỬ LÝ rPPG KHUÔN MẶT
+            rppg_data = self.rppg_pipeline.process_frame(frame, timestamp=time.perf_counter())
+            face_detected = rppg_data.get("detected", False)
+
+            hr_res = rppg_data.get("hr_bpm", 0.0)
+            rr_res = rppg_data.get("rr_rpm", 0.0)
+            if hr_res > 0:
+                self.current_hr = round(float(hr_res), 1)
+            if rr_res > 0:
+                self.current_rr = round(float(rr_res), 1)
+
+            # 2. XỬ LÝ LỒNG NGỰC (YOLO Pose định kỳ mỗi 8 frame)
+            if frame_idx % 8 == 0:
+                try:
+                    res = self.yolo_model(frame, imgsz=256, verbose=False)[0]
+                    if res.boxes is not None and len(res.boxes) > 0 and float(res.boxes.conf[0]) >= 0.35:
+                        if res.keypoints is not None and len(res.keypoints.xy) > 0:
+                            person = res.keypoints.xy[0]
+                            self.last_skeleton_kpts = person.cpu().numpy()
+                            self.last_seen_person_time = time.time()
+                            ls, rs, lh, rh = person[5], person[6], person[11], person[12]
+                            
+                            rx1, ry1, rx2, ry2 = self.chest_roi_extractor.get_chest_roi(frame, ls, rs, lh, rh)
+                            rx1, ry1 = max(0, int(rx1)), max(0, int(ry1))
+                            rx2, ry2 = min(w, int(rx2)), min(h, int(ry2))
+
+                            if rx2 > rx1 + 25 and ry2 > ry1 + 25:
+                                new_roi = (rx1, ry1, rx2, ry2)
+                                if self.current_chest_roi is None:
+                                    self.current_chest_roi = new_roi
+                                    self.motion_tracker.prev_gray = None
+                                else:
+                                    cx_old = (self.current_chest_roi[0] + self.current_chest_roi[2]) / 2.0
+                                    cy_old = (self.current_chest_roi[1] + self.current_chest_roi[3]) / 2.0
+                                    cx_new = (new_roi[0] + new_roi[2]) / 2.0
+                                    cy_new = (new_roi[1] + new_roi[3]) / 2.0
+                                    dist = ((cx_new - cx_old)**2 + (cy_new - cy_old)**2)**0.5
+                                    if dist >= 14.0:
+                                        self.current_chest_roi = tuple(
+                                            int(self.current_chest_roi[i] + 0.35 * (new_roi[i] - self.current_chest_roi[i]))
+                                            for i in range(4)
+                                        )
+                                        self.motion_tracker.prev_gray = None
+                except Exception:
+                    pass
+
+            # 3. TÍNH CHUYỂN ĐỘNG NGỰC & NHỊP THỞ
+            if self.current_chest_roi is not None:
+                x1, y1, x2, y2 = self.current_chest_roi
+                chest_crop = frame[y1:y2, x1:x2]
+                if chest_crop.size > 0:
+                    raw_m = self.motion_tracker.process(chest_crop)
+                    if raw_m is not None:
+                        m_val = float(np.clip(raw_m, -1.8, 1.8))
+                        self.motion_buffer.append(m_val)
+                        self.motion_timestamps.append(time.time())
+
+            if len(self.motion_buffer) >= 100 and frame_idx % 12 == 0:
+                dur = self.motion_timestamps[-1] - self.motion_timestamps[0]
+                if dur >= 5.0:
+                    s_arr = np.array(list(self.motion_buffer))
+                    t_arr = np.array(list(self.motion_timestamps))
+                    smooth_sig = ChestSignalFilter.smooth(s_arr, timestamps=t_arr)
+                    calc_bpm, _ = ChestBREstimator.estimate(smooth_sig, dur)
+                    if 7.0 <= calc_bpm <= 32.0:
+                        self.current_chest_bpm = round(0.12 * calc_bpm + 0.88 * self.current_chest_bpm, 1)
+
+            # 4. VẼ HUD ĐỒ HỌA HỢP NHẤT TRÊN DISPLAY FRAME
+            # A. Vẽ hộp vùng mặt rPPG (Trán & Má)
+            if self.show_face_roi and face_detected:
+                roi_res = rppg_data.get("roi_result", {})
+                rois = roi_res.get("rois", {})
+                if "forehead" in rois:
+                    pts = rois["forehead"].get("box_points")
+                    if pts is not None:
+                        cv2.polylines(display_frame, [pts], True, (0, 215, 255), 2)
+                        cv2.putText(display_frame, "TRAN (rPPG)", (pts[0][0], max(16, pts[0][1] - 6)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 215, 255), 1)
+                for cheek in ("left_cheek", "right_cheek"):
+                    if cheek in rois:
+                        pts = rois[cheek].get("box_points")
+                        if pts is not None:
+                            cv2.polylines(display_frame, [pts], True, (0, 210, 180), 2)
+
+            # B. Vẽ khung xương Pose ngực (liên tục 100% frame)
+            person_seen = (time.time() - self.last_seen_person_time) < 1.5
+            if self.show_skeleton and person_seen and self.last_skeleton_kpts is not None:
+                kpts = self.last_skeleton_kpts
+                for p1, p2 in SKELETON_PAIRS:
+                    if p1 < len(kpts) and p2 < len(kpts):
+                        x1_s, y1_s = int(kpts[p1][0]), int(kpts[p1][1])
+                        x2_s, y2_s = int(kpts[p2][0]), int(kpts[p2][1])
+                        if x1_s > 0 and y1_s > 0 and x2_s > 0 and y2_s > 0:
+                            cv2.line(display_frame, (x1_s, y1_s), (x2_s, y2_s), (99, 102, 241), 2)
+                for pt in [5, 6, 11, 12]:
+                    if pt < len(kpts):
+                        px, py = int(kpts[pt][0]), int(kpts[pt][1])
+                        if px > 0 and py > 0:
+                            cv2.circle(display_frame, (px, py), 5, (0, 210, 180), -1)
+
+            # C. Vẽ khung ngực Chest ROI (xanh neon)
+            if self.show_chest_roi and self.current_chest_roi is not None:
+                x1, y1, x2, y2 = self.current_chest_roi
+                cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 210, 180), 2)
+                cv2.putText(display_frame, f"CHEST ROI ({x2-x1}x{y2-y1})", (x1, max(18, y1 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 210, 180), 1)
+
+            # D. HUD Thông tin Hợp nhất trên đỉnh video (Medical-Grade Overlay)
+            cv2.rectangle(display_frame, (10, 10), (w - 10, 78), (15, 23, 42), -1)
+            cv2.rectangle(display_frame, (10, 10), (w - 10, 78), (255, 255, 255), 1)
+
+            # Cột 1: NHỊP TIM
+            cv2.putText(display_frame, "NHIP TIM (HR)", (25, 32),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 75, 120), 1)
+            cv2.putText(display_frame, f"{self.current_hr:.1f} BPM", (25, 64),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 75, 120), 2)
+
+            # Cột 2: THỞ KHUÔN MẶT
+            cv2.putText(display_frame, "THO MAT (rPPG)", (215, 32),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 210, 180), 1)
+            cv2.putText(display_frame, f"{self.current_rr:.1f} RPM", (215, 64),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 210, 180), 2)
+
+            # Cột 3: THỞ LỒNG NGỰC
+            cv2.putText(display_frame, "THO NGUC (YOLO)", (410, 32),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 120, 255), 1)
+            cv2.putText(display_frame, f"{self.current_chest_bpm:.1f} BPM", (410, 64),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.75, (160, 120, 255), 2)
+
+            # Nén JPEG chất lượng 70
+            _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            jpeg_bytes = jpeg_buf.tobytes()
+
+            with self.lock:
+                self.latest_frame_jpeg = jpeg_bytes
+                self.latest_data = {
+                    "heart_rate": self.current_hr,
+                    "respiration_rate": self.current_rr,
+                    "chest_bpm": self.current_chest_bpm,
+                    "detected": face_detected or person_seen,
+                    "status": "Đang giám sát All-in-One",
+                    "fps": 30.0,
+                }
+
+            # Lưu định kỳ CSDL
+            now_t = time.time()
+            if now_t - self.last_db_save >= 5.0 and self.current_hr > 0:
+                self.last_db_save = now_t
+                sev, _ = alarm_manager.evaluate_vitals(
+                    heart_rate=self.current_hr,
+                    respiration_rate=self.current_rr,
+                    chest_bpm=self.current_chest_bpm,
+                )
+                local_db.insert_record(
+                    heart_rate=self.current_hr,
+                    respiration_rate=self.current_rr,
+                    chest_bpm=self.current_chest_bpm,
+                    source="unified_webcam",
+                    status=sev,
+                    note="Giám sát Camera All-in-One"
+                )
+
+            frame_idx += 1
+            elapsed = time.perf_counter() - loop_start
+            time.sleep(max(0.001, frame_time - elapsed))
+
+    def generate_mjpeg_stream(self):
+        with self.lock:
+            self.active_clients += 1
+        self.start()
+        try:
+            while self.running:
+                frame_bytes = None
+                with self.lock:
+                    frame_bytes = self.latest_frame_jpeg
+
+                if frame_bytes is not None:
+                    yield (
+                        b"--frame\r\n"
+                        b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
+                    )
+                time.sleep(0.033)
+        finally:
+            with self.lock:
+                self.active_clients = max(0, self.active_clients - 1)
+
+
 # Khởi tạo singleton managers
 rppg_streamer = RPPGStreamManager()
 chest_streamer = ChestStreamManager()
+unified_streamer = UnifiedStreamManager()

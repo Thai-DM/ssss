@@ -82,30 +82,44 @@ function initClock() {
 function updateVideoStreams(targetId) {
   const rppgImg = document.getElementById("rppg-video-stream");
   const chestImg = document.getElementById("chest-video-stream");
+  const unifiedImg = document.getElementById("unified-video-stream");
 
-  if (!rppgImg || !chestImg) return;
-
-  if (targetId === "tab-rppg") {
-    // Chỉ kích hoạt luồng rPPG khi xem tab rPPG
-    const currentSrc = rppgImg.getAttribute("src") || "";
-    if (!currentSrc.includes("/api/video_feed/rppg")) {
-      rppgImg.src = "/api/video_feed/rppg";
+  if (targetId === "tab-unified") {
+    // Kích hoạt luồng 1-CAM ALL-IN-ONE (Mặt + Ngực đồng thời)
+    if (unifiedImg) {
+      const currentSrc = unifiedImg.getAttribute("src") || "";
+      if (!currentSrc.includes("/api/video_feed/unified")) {
+        unifiedImg.src = "/api/video_feed/unified";
+      }
     }
-    // Giải phóng stream ngực để hạ tải CPU
-    chestImg.src = "";
+    if (rppgImg) rppgImg.src = "";
+    if (chestImg) chestImg.src = "";
+  } else if (targetId === "tab-rppg") {
+    // Chỉ kích hoạt luồng rPPG khi xem tab rPPG
+    if (rppgImg) {
+      const currentSrc = rppgImg.getAttribute("src") || "";
+      if (!currentSrc.includes("/api/video_feed/rppg")) {
+        rppgImg.src = "/api/video_feed/rppg";
+      }
+    }
+    if (chestImg) chestImg.src = "";
+    if (unifiedImg) unifiedImg.src = "";
   } else if (targetId === "tab-chest") {
     // Chỉ kích hoạt luồng Ngực & YOLO Pose khi xem tab Ngực
-    const currentSrc = chestImg.getAttribute("src") || "";
-    if (!currentSrc.includes("/api/video_feed/chest")) {
-      chestImg.src = "/api/video_feed/chest";
+    if (chestImg) {
+      const currentSrc = chestImg.getAttribute("src") || "";
+      if (!currentSrc.includes("/api/video_feed/chest")) {
+        chestImg.src = "/api/video_feed/chest";
+      }
     }
-    // Giải phóng stream rPPG để hạ tải CPU
-    rppgImg.src = "";
+    if (rppgImg) rppgImg.src = "";
+    if (unifiedImg) unifiedImg.src = "";
   } else {
-    // Khi xem Tổng quan, Lịch sử, Cài đặt: Ngắt cả 2 stream camera
+    // Khi xem Tổng quan, Lịch sử, Cài đặt: Ngắt tất cả stream camera
     // CPU được nghỉ ngơi hoàn toàn, đồ thị và số liệu sinh hiệu vẫn cập nhật siêu mượt 60 FPS qua SSE
-    rppgImg.src = "";
-    chestImg.src = "";
+    if (rppgImg) rppgImg.src = "";
+    if (chestImg) chestImg.src = "";
+    if (unifiedImg) unifiedImg.src = "";
   }
 }
 
@@ -533,6 +547,16 @@ function updateHeroVitals(data) {
   const elHudChestBpm = document.getElementById("hud-chest-bpm");
   if (elHudChestFps) elHudChestFps.textContent = fps.toFixed(1);
   if (elHudChestBpm) elHudChestBpm.textContent = chest > 0 ? chest.toFixed(1) : "--";
+
+  // Unified 1-Cam elements
+  const elUnifiedHR = document.getElementById("unified-val-hr");
+  const elUnifiedRR = document.getElementById("unified-val-rr");
+  const elUnifiedChest = document.getElementById("unified-val-chest");
+  const elHudUnifiedFps = document.getElementById("hud-unified-fps");
+  if (elUnifiedHR) elUnifiedHR.textContent = hr > 0 ? hr.toFixed(1) : "--";
+  if (elUnifiedRR) elUnifiedRR.textContent = rr > 0 ? rr.toFixed(1) : "--";
+  if (elUnifiedChest) elUnifiedChest.textContent = chest > 0 ? chest.toFixed(1) : "--";
+  if (elHudUnifiedFps) elHudUnifiedFps.textContent = fps.toFixed(1);
 
   if (elSyncTime) {
     elSyncTime.textContent = new Date().toLocaleTimeString("vi-VN", { hour12: false });

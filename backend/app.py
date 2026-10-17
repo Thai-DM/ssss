@@ -50,7 +50,7 @@ app = Flask(
 # Import các module nội bộ
 import local_db
 import alarm_manager
-from video_stream import rppg_streamer, chest_streamer
+from video_stream import rppg_streamer, chest_streamer, unified_streamer
 
 # Thử khởi tạo Firebase (nếu có cấu hình, nếu không dùng SQLite)
 firebase_available = False
@@ -67,6 +67,7 @@ except Exception as e:
 # Khởi động sẵn luồng rPPG Streamer và Chest Streamer nền
 rppg_streamer.start()
 chest_streamer.start()
+unified_streamer.start()
 
 # SSE clients queue
 _sse_clients = []
@@ -97,6 +98,15 @@ def dashboard():
 # ==============================================================================
 # 2. VIDEO STREAMING ENDPOINTS (MJPEG)
 # ==============================================================================
+@app.route("/api/video_feed/unified")
+def video_feed_unified():
+    """Luồng video MJPEG All-in-One: một camera duy nhất đo đồng thời cả nhịp tim, nhịp thở mặt và nhịp thở ngực."""
+    return Response(
+        unified_streamer.generate_mjpeg_stream(),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
 @app.route("/api/video_feed/rppg")
 def video_feed_rppg():
     """Luồng video MJPEG khuôn mặt rPPG kèm HUD trực quan hóa thời gian thực."""
@@ -149,11 +159,12 @@ def get_latest():
     """Lấy số liệu sinh hiệu mới nhất từ cả rPPG và Chest Tracker."""
     live_rppg = rppg_streamer.get_latest_data()
     live_chest = chest_streamer.get_latest_data()
+    live_unified = unified_streamer.get_latest_data()
     db_rec = local_db.get_latest_record() or {}
 
-    hr = live_rppg.get("heart_rate") or db_rec.get("heart_rate", 72.0)
-    rr = live_rppg.get("respiration_rate") or db_rec.get("respiration_rate", 16.0)
-    chest = live_chest.get("chest_bpm") or db_rec.get("chest_bpm", rr)
+    hr = live_unified.get("heart_rate") or live_rppg.get("heart_rate") or db_rec.get("heart_rate", 72.0)
+    rr = live_unified.get("respiration_rate") or live_rppg.get("respiration_rate") or db_rec.get("respiration_rate", 16.0)
+    chest = live_unified.get("chest_bpm") or live_chest.get("chest_bpm") or db_rec.get("chest_bpm", rr)
     bpm = db_rec.get("bpm", chest)
 
     severity, messages = alarm_manager.evaluate_vitals(heart_rate=hr, respiration_rate=rr, chest_bpm=chest)
@@ -416,11 +427,17 @@ def sse_stream():
                         last_pulse_time = now
                         live_rppg = rppg_streamer.get_latest_data()
                         live_chest = chest_streamer.get_latest_data()
+                        live_unified = unified_streamer.get_latest_data()
+
+                        hr_val = live_unified.get("heart_rate") or live_rppg.get("heart_rate", 72.0)
+                        rr_val = live_unified.get("respiration_rate") or live_rppg.get("respiration_rate", 16.0)
+                        chest_val = live_unified.get("chest_bpm") or live_chest.get("chest_bpm", 16.0)
+
                         payload = json.dumps({
                             "type": "live_pulse",
-                            "heart_rate": live_rppg.get("heart_rate", 72.0),
-                            "respiration_rate": live_rppg.get("respiration_rate", 16.0),
-                            "chest_bpm": live_chest.get("chest_bpm", 16.0),
+                            "heart_rate": hr_val,
+                            "respiration_rate": rr_val,
+                            "chest_bpm": chest_val,
                             "chest_motion": live_chest.get("motion", 0.0),
                             "fps": live_rppg.get("fps", 30.0),
                             "status": live_rppg.get("status", "Bình thường"),

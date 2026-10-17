@@ -40,6 +40,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
         <span>Tổng quan</span>
       </button>
+      <button class="nav-tab" data-tab="tab-unified" id="btn-tab-unified">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 10l5 5-5 5"/><path d="M4 4v7a4 4 0 0 0 4 4h12"/></svg>
+        <span style="font-weight: 700; color: var(--resp);">1-Cam All-in-One</span>
+      </button>
       <button class="nav-tab" data-tab="tab-rppg" id="btn-tab-rppg">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
         <span>Camera rPPG</span>
@@ -610,7 +614,112 @@
 
 
     <!-- ====================================================================
-         TAB 4: LỊCH SỬ & BÁO CÁO DỮ LIỆU (DATA RECORDS MANAGEMENT)
+         TAB 4: CAMERA TOÀN DIỆN (1 CAMERA ĐO TẤT CẢ: MẶT + NGỰC)
+         ==================================================================== -->
+    <section class="tab-content" id="tab-unified">
+      <div class="rppg-view-grid">
+
+        <!-- Left: Live Unified Video Feed -->
+        <div class="glass-card video-card">
+          <div class="video-card-header">
+            <div class="video-title-wrap">
+              <span class="live-recording-badge" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3); color: var(--resp);">
+                <span class="rec-dot" style="background: var(--resp);"></span> 1-CAM ALL-IN-ONE
+              </span>
+              <div>
+                <h3 class="video-header-title">Luồng Video Hợp Nhất Đo Toàn Diện (Mặt &amp; Ngực)</h3>
+                <p class="video-header-sub">1 Camera duy nhất đo đồng thời: Nhịp tim (HR), Nhịp thở mặt (RR) &amp; Nhịp thở ngực (YOLO Pose)</p>
+              </div>
+            </div>
+            <div class="video-source-selector">
+              <span class="badge-tag live-tag">Webcam Laptop Trực Tiếp</span>
+            </div>
+          </div>
+
+          <div class="video-frame-wrapper">
+            <img id="unified-video-stream" src="" alt="Camera Toàn diện All-in-One" />
+            <div class="video-hud-overlay" style="top: auto; bottom: 12px; right: 12px;">
+              <div class="hud-item"><span class="hud-k">CHẾ ĐỘ:</span> <span class="hud-v" style="color: var(--resp);">1-CAM UNIFIED</span></div>
+              <div class="hud-item"><span class="hud-k">FPS:</span> <span class="hud-v" id="hud-unified-fps">30.0</span></div>
+              <div class="hud-item"><span class="hud-k">TRẠNG THÁI:</span> <span class="hud-v text-emerald">ĐỒNG BỘ 3 SINH HIỆU</span></div>
+            </div>
+          </div>
+
+          <!-- Quick Controls Below Video -->
+          <div class="video-action-bar">
+            <div class="action-btn-group">
+              <span style="font-size: 0.85rem; color: var(--text-dim); display: flex; align-items: center; gap: 8px;">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+                Camera tự động bắt khuôn mặt (đo tim + thở) và lồng ngực (đo cử động cơ học) cùng lúc.
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Live Vitals Tri-Monitor Cards -->
+        <div class="rppg-side-column">
+          
+          <div class="glass-card" style="padding: 20px;">
+            <h4 style="font-size: 1rem; font-weight: 700; color: var(--text-main); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+              <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--resp);"></span>
+              3 CHỈ SỐ SINH HIỆU ĐO ĐỒNG THỜI
+            </h4>
+
+            <div style="display: flex; flex-direction: column; gap: 14px;">
+              <!-- 1. Heart Rate -->
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(255, 51, 102, 0.25); border-radius: 10px; padding: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="color: #FF3366; font-weight: 600; font-size: 0.85rem;">1. NHỊP TIM MAO MẠCH (HR)</span>
+                  <span class="badge-tag">rPPG CHROM</span>
+                </div>
+                <div style="display: flex; align-items: baseline; gap: 6px; margin-top: 6px;">
+                  <span class="font-mono" id="unified-val-hr" style="font-size: 1.8rem; font-weight: 800; color: #FF3366;">--</span>
+                  <span style="font-size: 0.85rem; color: var(--text-dim);">BPM</span>
+                </div>
+              </div>
+
+              <!-- 2. Face Respiration -->
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(0, 210, 180, 0.25); border-radius: 10px; padding: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="color: #00D2B4; font-weight: 600; font-size: 0.85rem;">2. NHỊP THỞ KHUÔN MẶT (RR)</span>
+                  <span class="badge-tag">rBBG FFT</span>
+                </div>
+                <div style="display: flex; align-items: baseline; gap: 6px; margin-top: 6px;">
+                  <span class="font-mono" id="unified-val-rr" style="font-size: 1.8rem; font-weight: 800; color: #00D2B4;">--</span>
+                  <span style="font-size: 0.85rem; color: var(--text-dim);">RPM</span>
+                </div>
+              </div>
+
+              <!-- 3. Chest Respiration -->
+              <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 10px; padding: 14px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span style="color: var(--motion); font-weight: 600; font-size: 0.85rem;">3. NHỊP THỞ CỬ ĐỘNG NGỰC</span>
+                  <span class="badge-tag">YOLO Pose</span>
+                </div>
+                <div style="display: flex; align-items: baseline; gap: 6px; margin-top: 6px;">
+                  <span class="font-mono" id="unified-val-chest" style="font-size: 1.8rem; font-weight: 800; color: var(--motion);">--</span>
+                  <span style="font-size: 0.85rem; color: var(--text-dim);">BPM</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Feature comparison note -->
+          <div class="glass-card" style="padding: 16px; border-left: 3px solid var(--resp);">
+            <h5 style="font-size: 0.9rem; font-weight: 700; color: var(--text-main); margin-bottom: 6px;">Ưu điểm đo đồng thời (All-in-One):</h5>
+            <p style="font-size: 0.82rem; color: var(--text-dim); line-height: 1.5; margin: 0;">
+              Đối chiếu chéo 2 nguồn đo nhịp thở độc lập (quang phổ mặt vs cử động cơ học lồng ngực) giúp loại bỏ sai số chuyển động và đạt độ tin cậy y tế cao nhất.
+            </p>
+          </div>
+
+        </div>
+
+      </div>
+    </section>
+
+
+    <!-- ====================================================================
+         TAB 5: LỊCH SỬ & BÁO CÁO DỮ LIỆU (DATA RECORDS MANAGEMENT)
          ==================================================================== -->
     <section class="tab-content" id="tab-records">
       <div class="glass-card records-card">
