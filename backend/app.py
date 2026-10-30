@@ -169,6 +169,8 @@ def get_latest():
 
     severity, messages = alarm_manager.evaluate_vitals(heart_rate=hr, respiration_rate=rr, chest_bpm=chest)
 
+    fps_val = live_unified.get("fps") or live_rppg.get("fps") or live_chest.get("fps") or 30.0
+
     response_data = {
         "heart_rate": round(float(hr), 1),
         "respiration_rate": round(float(rr), 1),
@@ -178,7 +180,7 @@ def get_latest():
         "status": severity,
         "status_messages": messages,
         "is_stable": live_rppg.get("is_stable", True),
-        "fps": live_rppg.get("fps", 30.0),
+        "fps": round(float(fps_val), 1),
         "source": live_rppg.get("mode", db_rec.get("source", "camera_ai")),
         "recorded_at": datetime.now().isoformat(),
         "bvp_wave": live_rppg.get("bvp_wave", []),
@@ -418,12 +420,12 @@ def sse_stream():
 
             while True:
                 try:
-                    msg = client_q.get(timeout=1.0)
+                    msg = client_q.get(timeout=0.15)
                     yield msg
                 except queue.Empty:
-                    # Gửi nhịp cập nhật realtime mỗi giây kèm dữ liệu sóng
+                    # Gửi nhịp cập nhật realtime siêu mượt (khoảng 6-7 lần/giây)
                     now = time.time()
-                    if now - last_pulse_time >= 1.0:
+                    if now - last_pulse_time >= 0.15:
                         last_pulse_time = now
                         live_rppg = rppg_streamer.get_latest_data()
                         live_chest = chest_streamer.get_latest_data()
@@ -432,6 +434,7 @@ def sse_stream():
                         hr_val = live_unified.get("heart_rate") or live_rppg.get("heart_rate", 72.0)
                         rr_val = live_unified.get("respiration_rate") or live_rppg.get("respiration_rate", 16.0)
                         chest_val = live_unified.get("chest_bpm") or live_chest.get("chest_bpm", 16.0)
+                        fps_val = live_unified.get("fps") or live_rppg.get("fps") or live_chest.get("fps") or 30.0
 
                         payload = json.dumps({
                             "type": "live_pulse",
@@ -439,7 +442,7 @@ def sse_stream():
                             "respiration_rate": rr_val,
                             "chest_bpm": chest_val,
                             "chest_motion": live_chest.get("motion", 0.0),
-                            "fps": live_rppg.get("fps", 30.0),
+                            "fps": round(float(fps_val), 1),
                             "status": live_rppg.get("status", "Bình thường"),
                             "is_stable": live_rppg.get("is_stable", True),
                             "timestamp": datetime.now().isoformat(),

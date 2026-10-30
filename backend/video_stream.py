@@ -48,33 +48,44 @@ import alarm_manager
 # 1. CAMERA CAPTURE DÙNG CHUNG (SINGLETON CAMERA READER)
 # ==============================================================================
 class CameraReader:
-    """Đọc camera laptop 0 ở tiến trình nền để chia sẻ frame cho cả rPPG và Chest YOLO."""
+    """Đọc camera laptop 0 ở tiến trình nền để chia sẻ frame cho cả rPPG và Chest YOLO với độ trễ tối thiểu (Zero-latency)."""
 
     def __init__(self, camera_index=0):
         self.camera_index = camera_index
         self.cap = None
         self.running = False
-        self.lock = threading.Lock()
+        self.condition = threading.Condition()
         self.thread: Optional[threading.Thread] = None
         self.latest_frame: Optional[np.ndarray] = None
         self.last_frame_time = 0.0
+        self.frame_id = 0
+        self.measured_fps = 30.0
 
     def start(self):
-        with self.lock:
+        with self.condition:
             if not self.running:
                 self.running = True
                 self.thread = threading.Thread(target=self._capture_loop, daemon=True)
                 self.thread.start()
 
     def stop(self):
-        with self.lock:
+        with self.condition:
             self.running = False
+            self.condition.notify_all()
 
     def get_frame(self) -> Optional[np.ndarray]:
-        with self.lock:
+        with self.condition:
             if self.latest_frame is not None:
                 return self.latest_frame.copy()
             return None
+
+    def wait_for_new_frame(self, last_id: int, timeout: float = 0.04) -> Tuple[Optional[np.ndarray], int]:
+        """Chờ frame mới từ camera với timeout ngắn, đồng bộ chuẩn xác với phần cứng."""
+        with self.condition:
+            if self.frame_id == last_id and self.running:
+                self.condition.wait(timeout=timeout)
+            frame = self.latest_frame.copy() if self.latest_frame is not None else None
+            return frame, self.frame_id
 
     def _capture_loop(self):
         print(f"[CameraReader] Đang mở Webcam Laptop (Index={self.camera_index})...")
@@ -83,27 +94,44 @@ class CameraReader:
             self.cap = cv2.VideoCapture(self.camera_index)
 
         if self.cap.isOpened():
+            # Yêu cầu định dạng MJPG để camera phần cứng mở tối đa băng thông và frame rate
+            self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
-            print("[CameraReader] Đã mở thành công Webcam Laptop (640x480 @ 30 FPS).")
+            self.cap.set(cv2.CAP_PROP_FPS, 60)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Giảm tối đa độ trễ đệm
+            actual_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            print(f"[CameraReader] Đã mở thành công Webcam Laptop (640x480 @ {actual_fps:.0f} FPS, Buffer=1).")
         else:
             print("[CameraReader] CẢNH BÁO: Không mở được Webcam Laptop.")
+
+        fps_t0 = time.perf_counter()
+        fps_frames = 0
 
         while self.running:
             if self.cap is not None and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if ret and frame is not None:
-                    resized = cv2.resize(frame, (640, 480))
-                    with self.lock:
-                        self.latest_frame = resized
-                        self.last_frame_time = time.time()
-                else:
-                    time.sleep(0.02)
-            else:
-                time.sleep(0.1)
+                    if frame.shape[0] != 480 or frame.shape[1] != 640:
+                        frame = cv2.resize(frame, (640, 480))
 
-            time.sleep(0.015)  # ~60 fps capture limit
+                    fps_frames += 1
+                    now = time.perf_counter()
+                    dt = now - fps_t0
+                    if dt >= 1.0:
+                        self.measured_fps = round(fps_frames / dt, 1)
+                        fps_frames = 0
+                        fps_t0 = now
+
+                    with self.condition:
+                        self.latest_frame = frame
+                        self.last_frame_time = time.time()
+                        self.frame_id += 1
+                        self.condition.notify_all()
+                else:
+                    time.sleep(0.005)
+            else:
+                time.sleep(0.05)
 
         if self.cap is not None:
             self.cap.release()
@@ -138,6 +166,10 @@ class RPPGStreamManager:
         self.pipeline = RPPGPipeline(window_sec=8.0, target_fs=30.0, roi_mode=self.roi_mode)
         self.visualizer = UIVisualizer(show_mesh=self.show_mesh)
 
+        self.frame_condition = threading.Condition()
+        self.frame_id = 0
+        self.actual_fps = 30.0
+
         self.latest_frame_jpeg: Optional[bytes] = None
         self.latest_data: Dict[str, Any] = {
             "heart_rate": 74.0,
@@ -163,6 +195,8 @@ class RPPGStreamManager:
     def stop(self):
         with self.lock:
             self.running = False
+            with self.frame_condition:
+                self.frame_condition.notify_all()
 
     def set_mode(self, mode: str):
         with self.lock:
@@ -205,7 +239,10 @@ class RPPGStreamManager:
                 base_img = cv2.resize(base_img, (640, 480))
 
         frame_idx = 0
+        last_cam_id = -1
         cap_demo = None
+        fps_t0 = time.perf_counter()
+        fps_frames = 0
 
         while self.running:
             if self.active_clients <= 0:
@@ -216,11 +253,10 @@ class RPPGStreamManager:
             frame = None
 
             if self.mode == "webcam":
-                frame = camera_reader.get_frame()
-                if frame is None:
-                    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                    cv2.putText(frame, "DANG KET NOI WEBCAM LAPTOP...", (120, 240),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 210, 180), 2)
+                frame, cam_id = camera_reader.wait_for_new_frame(last_cam_id, timeout=0.035)
+                if frame is None or cam_id == last_cam_id:
+                    continue
+                last_cam_id = cam_id
 
             elif self.mode == "demo_video":
                 if cap_demo is None or not cap_demo.isOpened():
@@ -279,12 +315,23 @@ class RPPGStreamManager:
                 pipeline_data = self.pipeline.process_frame(frame, timestamp=time.perf_counter())
                 display_frame = self.visualizer.render(frame, pipeline_data)
 
-                _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                fps_frames += 1
+                now_f = time.perf_counter()
+                if now_f - fps_t0 >= 0.5:
+                    self.actual_fps = round(fps_frames / (now_f - fps_t0), 1)
+                    fps_frames = 0
+                    fps_t0 = now_f
+
+                # Nén JPEG tốc độ cao chất lượng 75
+                _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 jpeg_bytes = jpeg_buf.tobytes()
 
-                with self.lock:
+                with self.frame_condition:
                     self.latest_frame_jpeg = jpeg_bytes
+                    self.frame_id += 1
+                    self.frame_condition.notify_all()
 
+                with self.lock:
                     hr_val = pipeline_data.get("hr_bpm", 0.0)
                     rr_val = pipeline_data.get("rr_rpm", 0.0)
 
@@ -297,7 +344,7 @@ class RPPGStreamManager:
                         "respiration_rate": round(float(rr_val), 1),
                         "chest_bpm": round(float(rr_val), 1),
                         "bpm": round(float(rr_val), 1),
-                        "fps": round(float(pipeline_data.get("fps", 30.0)), 1),
+                        "fps": self.actual_fps,
                         "status": pipeline_data.get("status", "Đang xử lý"),
                         "is_stable": pipeline_data.get("is_stable", False),
                         "bvp_wave": pipeline_data.get("bvp_wave", []),
@@ -320,9 +367,10 @@ class RPPGStreamManager:
                     )
 
             frame_idx += 1
-            elapsed = time.perf_counter() - loop_start
-            sleep_time = max(0.001, frame_time - elapsed)
-            time.sleep(sleep_time)
+            if self.mode != "webcam":
+                elapsed = time.perf_counter() - loop_start
+                sleep_time = max(0.001, frame_time - elapsed)
+                time.sleep(sleep_time)
 
         if cap_demo is not None:
             cap_demo.release()
@@ -332,17 +380,20 @@ class RPPGStreamManager:
             self.active_clients += 1
         self.start()
         try:
+            last_sent_id = -1
             while self.running:
                 frame_bytes = None
-                with self.lock:
+                with self.frame_condition:
+                    if self.frame_id == last_sent_id and self.running:
+                        self.frame_condition.wait(timeout=0.035)
                     frame_bytes = self.latest_frame_jpeg
+                    last_sent_id = self.frame_id
 
                 if frame_bytes is not None:
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
                     )
-                time.sleep(0.033)
         finally:
             with self.lock:
                 self.active_clients = max(0, self.active_clients - 1)
@@ -360,6 +411,10 @@ class ChestStreamManager:
         self.running = False
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
+
+        self.frame_condition = threading.Condition()
+        self.frame_id = 0
+        self.actual_fps = 30.0
 
         self.show_skeleton = True
         self.show_roi = True
@@ -402,6 +457,8 @@ class ChestStreamManager:
     def stop(self):
         with self.lock:
             self.running = False
+            with self.frame_condition:
+                self.frame_condition.notify_all()
 
     def set_source(self, source: str, esp32_url: Optional[str] = None):
         with self.lock:
@@ -428,6 +485,9 @@ class ChestStreamManager:
         fps = 30.0
         cap_esp = None
         curr_source = None
+        last_cam_id = -1
+        fps_t0 = time.perf_counter()
+        fps_frames = 0
 
         # Connections for skeleton drawing (COCO pose pairs)
         SKELETON_PAIRS = [
@@ -450,7 +510,10 @@ class ChestStreamManager:
                 if cap_esp is not None:
                     cap_esp.release()
                     cap_esp = None
-                frame = camera_reader.get_frame()
+                frame, cam_id = camera_reader.wait_for_new_frame(last_cam_id, timeout=0.035)
+                if frame is None or cam_id == last_cam_id:
+                    continue
+                last_cam_id = cam_id
 
             elif self.source == "esp32":
                 if curr_source != "esp32" or cap_esp is None or not cap_esp.isOpened():
@@ -463,10 +526,6 @@ class ChestStreamManager:
                     frame = cv2.resize(read_frame, (640, 480))
 
             if frame is None:
-                frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(frame, "DANG KET NOI CAMERA NGUC (LAPTOP WEBCAM)...", (80, 240),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 210, 180), 2)
-                time.sleep(0.03)
                 continue
 
             display_frame = frame.copy()
@@ -570,26 +629,41 @@ class ChestStreamManager:
             cv2.rectangle(display_frame, (10, 10), (320, 85), (15, 23, 42), -1)
             cv2.rectangle(display_frame, (10, 10), (320, 85), (255, 255, 255), 1)
 
+            fps_frames += 1
+            now_f = time.perf_counter()
+            if now_f - fps_t0 >= 0.5:
+                self.actual_fps = round(fps_frames / (now_f - fps_t0), 1)
+                fps_frames = 0
+                fps_t0 = now_f
+
+            # Vẽ HUD thông tin lâm sàng lên màn hình
+            cv2.rectangle(display_frame, (10, 10), (330, 85), (15, 23, 42), -1)
+            cv2.rectangle(display_frame, (10, 10), (330, 85), (255, 255, 255), 1)
+
             bpm_text = f"NHIP THO: {self.current_bpm:.1f} BPM"
             cv2.putText(display_frame, bpm_text, (20, 42),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 210, 180), 2)
 
-            sub_info = f"Nguon: {'Webcam Laptop' if self.source == 'webcam' else 'ESP32-CAM'} | FPS: 30.0"
+            sub_info = f"Nguon: {'Webcam Laptop' if self.source == 'webcam' else 'ESP32-CAM'} | FPS: {self.actual_fps:.1f}"
             cv2.putText(display_frame, sub_info, (20, 68),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (148, 163, 184), 1)
 
-            # Nén JPEG để phát stream
-            _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            # Nén JPEG tốc độ cao chất lượng 75
+            _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
             jpeg_bytes = jpeg_buf.tobytes()
 
-            with self.lock:
+            with self.frame_condition:
                 self.latest_frame_jpeg = jpeg_bytes
+                self.frame_id += 1
+                self.frame_condition.notify_all()
+
+            with self.lock:
                 self.latest_data = {
                     "chest_bpm": round(float(self.current_bpm), 1),
                     "motion": round(float(self.latest_motion_val), 3),
                     "detected": person_detected,
                     "status": "Đang theo dõi cử động ngực",
-                    "fps": 30.0,
+                    "fps": self.actual_fps,
                     "source": self.source,
                 }
 
@@ -607,8 +681,9 @@ class ChestStreamManager:
                 )
 
             frame_idx += 1
-            elapsed = time.perf_counter() - loop_start
-            time.sleep(max(0.001, (1.0 / fps) - elapsed))
+            if self.source != "webcam":
+                elapsed = time.perf_counter() - loop_start
+                time.sleep(max(0.001, (1.0 / fps) - elapsed))
 
         if cap_esp is not None:
             cap_esp.release()
@@ -618,17 +693,20 @@ class ChestStreamManager:
             self.active_clients += 1
         self.start()
         try:
+            last_sent_id = -1
             while self.running:
                 frame_bytes = None
-                with self.lock:
+                with self.frame_condition:
+                    if self.frame_id == last_sent_id and self.running:
+                        self.frame_condition.wait(timeout=0.035)
                     frame_bytes = self.latest_frame_jpeg
+                    last_sent_id = self.frame_id
 
                 if frame_bytes is not None:
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
                     )
-                time.sleep(0.033)
         finally:
             with self.lock:
                 self.active_clients = max(0, self.active_clients - 1)
@@ -647,6 +725,10 @@ class UnifiedStreamManager:
         self.running = False
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
+
+        self.frame_condition = threading.Condition()
+        self.frame_id = 0
+        self.actual_fps = 30.0
 
         # Pipeline rPPG khuôn mặt
         self.rppg_pipeline = RPPGPipeline(window_sec=8.0, target_fs=30.0, roi_mode="all")
@@ -695,15 +777,18 @@ class UnifiedStreamManager:
     def stop(self):
         with self.lock:
             self.running = False
+            with self.frame_condition:
+                self.frame_condition.notify_all()
 
     def get_latest_data(self) -> Dict[str, Any]:
         with self.lock:
             return dict(self.latest_data)
 
     def _run_loop(self):
-        fps = 30.0
-        frame_time = 1.0 / fps
         frame_idx = 0
+        last_cam_id = -1
+        fps_t0 = time.perf_counter()
+        fps_frames = 0
 
         SKELETON_PAIRS = [
             (5, 6),   # shoulders
@@ -718,11 +803,10 @@ class UnifiedStreamManager:
                 time.sleep(0.08)
                 continue
 
-            loop_start = time.perf_counter()
-            frame = camera_reader.get_frame()
-            if frame is None:
-                time.sleep(0.02)
+            frame, cam_id = camera_reader.wait_for_new_frame(last_cam_id, timeout=0.035)
+            if frame is None or cam_id == last_cam_id:
                 continue
+            last_cam_id = cam_id
 
             h, w = frame.shape[:2]
             display_frame = frame.copy()
@@ -834,6 +918,13 @@ class UnifiedStreamManager:
                 cv2.putText(display_frame, f"CHEST ROI ({x2-x1}x{y2-y1})", (x1, max(18, y1 - 8)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 210, 180), 1)
 
+            fps_frames += 1
+            now_f = time.perf_counter()
+            if now_f - fps_t0 >= 0.5:
+                self.actual_fps = round(fps_frames / (now_f - fps_t0), 1)
+                fps_frames = 0
+                fps_t0 = now_f
+
             # D. HUD Thông tin Hợp nhất trên đỉnh video (Medical-Grade Overlay)
             cv2.rectangle(display_frame, (10, 10), (w - 10, 78), (15, 23, 42), -1)
             cv2.rectangle(display_frame, (10, 10), (w - 10, 78), (255, 255, 255), 1)
@@ -845,30 +936,38 @@ class UnifiedStreamManager:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 75, 120), 2)
 
             # Cột 2: THỞ KHUÔN MẶT
-            cv2.putText(display_frame, "THO MAT (rPPG)", (215, 32),
+            cv2.putText(display_frame, "THO MAT (rPPG)", (205, 32),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 210, 180), 1)
-            cv2.putText(display_frame, f"{self.current_rr:.1f} RPM", (215, 64),
+            cv2.putText(display_frame, f"{self.current_rr:.1f} RPM", (205, 64),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 210, 180), 2)
 
             # Cột 3: THỞ LỒNG NGỰC
-            cv2.putText(display_frame, "THO NGUC (YOLO)", (410, 32),
+            cv2.putText(display_frame, "THO NGUC (YOLO)", (385, 32),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 120, 255), 1)
-            cv2.putText(display_frame, f"{self.current_chest_bpm:.1f} BPM", (410, 64),
+            cv2.putText(display_frame, f"{self.current_chest_bpm:.1f} BPM", (385, 64),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.75, (160, 120, 255), 2)
 
-            # Nén JPEG chất lượng 70
-            _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            # Cột 4: LIVE FPS
+            cv2.putText(display_frame, f"FPS: {self.actual_fps:.1f}", (w - 110, 52),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 210, 180), 1)
+
+            # Nén JPEG tốc độ cao chất lượng 75
+            _, jpeg_buf = cv2.imencode(".jpg", display_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
             jpeg_bytes = jpeg_buf.tobytes()
 
-            with self.lock:
+            with self.frame_condition:
                 self.latest_frame_jpeg = jpeg_bytes
+                self.frame_id += 1
+                self.frame_condition.notify_all()
+
+            with self.lock:
                 self.latest_data = {
                     "heart_rate": self.current_hr,
                     "respiration_rate": self.current_rr,
                     "chest_bpm": self.current_chest_bpm,
                     "detected": face_detected or person_seen,
                     "status": "Đang giám sát All-in-One",
-                    "fps": 30.0,
+                    "fps": self.actual_fps,
                 }
 
             # Lưu định kỳ CSDL
@@ -890,25 +989,26 @@ class UnifiedStreamManager:
                 )
 
             frame_idx += 1
-            elapsed = time.perf_counter() - loop_start
-            time.sleep(max(0.001, frame_time - elapsed))
 
     def generate_mjpeg_stream(self):
         with self.lock:
             self.active_clients += 1
         self.start()
         try:
+            last_sent_id = -1
             while self.running:
                 frame_bytes = None
-                with self.lock:
+                with self.frame_condition:
+                    if self.frame_id == last_sent_id and self.running:
+                        self.frame_condition.wait(timeout=0.035)
                     frame_bytes = self.latest_frame_jpeg
+                    last_sent_id = self.frame_id
 
                 if frame_bytes is not None:
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
                     )
-                time.sleep(0.033)
         finally:
             with self.lock:
                 self.active_clients = max(0, self.active_clients - 1)

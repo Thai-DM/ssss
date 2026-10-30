@@ -39,8 +39,8 @@ class RPPGPipeline:
         self.roi_extractor = FaceROIExtractor()
         self.chrom_processor = CHROMProcessor(default_fs=target_fs)
 
-        # Bộ đệm dữ liệu chuỗi thời gian
-        self.max_buffer_len = int(window_sec * 45)  # buffer tối đa
+        # Bộ đệm dữ liệu chuỗi thời gian (hỗ trợ tốc độ khung hình cao lên tới 60+ FPS)
+        self.max_buffer_len = int(window_sec * 65)  # buffer tối đa
         self.timestamps = deque(maxlen=self.max_buffer_len)
         self.r_buffer = deque(maxlen=self.max_buffer_len)
         self.g_buffer = deque(maxlen=self.max_buffer_len)

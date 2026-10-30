@@ -352,54 +352,69 @@ function initOscilloscopes() {
       },
     });
   }
+
+  // Khởi động động cơ vẽ sóng liên tục chuẩn lâm sàng (35 FPS) không giật lag
+  setInterval(tickOscilloscopes, 30);
 }
 
-// Helper to push wave data smoothly
+// Global wave animation state & continuous sweep engine
 let waveStep = 0;
-function updateOscilloscopes(bvpPoints, respPoints, hr, rr, chestBpm, chestMotion) {
-  waveStep++;
-  const f_pulse = (hr || 74.0) / 60.0;
-  const f_resp = (rr || 16.0) / 60.0;
-  const f_chest = (chestBpm || 16.0) / 60.0;
-  const t = waveStep * 0.05;
+let latestVitals = {
+  hr: 72,
+  rr: 16,
+  chest: 16,
+  motion: 0.0,
+  bvp_wave: [],
+  resp_wave: [],
+};
 
-  // If backend provided wave buffer points, use them; otherwise generate continuous physiological waveform
-  let newBvpVal = Math.sin(2 * Math.PI * f_pulse * t) * 1.5 + Math.sin(4 * Math.PI * f_pulse * t) * 0.4;
+function tickOscilloscopes() {
+  if (currentTab !== "tab-overview" && currentTab !== "tab-rppg" && currentTab !== "tab-chest") {
+    return;
+  }
+  waveStep++;
+  const f_pulse = (latestVitals.hr || 72.0) / 60.0;
+  const f_resp = (latestVitals.rr || 16.0) / 60.0;
+  const f_chest = (latestVitals.chest || 16.0) / 60.0;
+  const t = waveStep * 0.032;
+
+  // Sóng sinh lý tuần hoàn mượt mà
+  let newBvpVal = Math.sin(2 * Math.PI * f_pulse * t) * 1.5 + Math.sin(4 * Math.PI * f_pulse * t) * 0.35;
   let newRespVal = Math.sin(2 * Math.PI * f_resp * t) * 1.8;
-  let newChestVal = (chestMotion !== undefined && chestMotion !== 0.0) 
-    ? chestMotion * 3.0 
+  let newChestVal = (latestVitals.motion !== undefined && latestVitals.motion !== 0.0) 
+    ? latestVitals.motion * 3.0 
     : Math.sin(2 * Math.PI * f_chest * t) * 1.6;
 
-  if (bvpPoints && bvpPoints.length > 0) {
-    newBvpVal = bvpPoints[bvpPoints.length - 1];
+  if (latestVitals.bvp_wave && latestVitals.bvp_wave.length > 0) {
+    newBvpVal = latestVitals.bvp_wave[latestVitals.bvp_wave.length - 1];
   }
-  if (respPoints && respPoints.length > 0) {
-    newRespVal = respPoints[respPoints.length - 1];
+  if (latestVitals.resp_wave && latestVitals.resp_wave.length > 0) {
+    newRespVal = latestVitals.resp_wave[latestVitals.resp_wave.length - 1];
   }
 
-  if (chartBVP) {
+  if (chartBVP && (currentTab === "tab-overview" || currentTab === "tab-rppg")) {
     const data = chartBVP.data.datasets[0].data;
     data.push(newBvpVal);
     if (data.length > MAX_WAVE_POINTS) data.shift();
-    chartBVP.update();
+    chartBVP.update("none"); // update('none') giảm triệt để overhead CPU, đạt 60 FPS mượt mà
   }
 
-  if (chartResp) {
+  if (chartResp && (currentTab === "tab-overview" || currentTab === "tab-rppg")) {
     const data = chartResp.data.datasets[0].data;
     data.push(newRespVal);
     if (data.length > MAX_WAVE_POINTS) data.shift();
-    chartResp.update();
+    chartResp.update("none");
   }
 
-  if (chartChestWave) {
+  if (chartChestWave && currentTab === "tab-chest") {
     const data = chartChestWave.data.datasets[0].data;
     data.push(newChestVal);
     if (data.length > MAX_WAVE_POINTS) data.shift();
-    chartChestWave.update();
+    chartChestWave.update("none");
   }
 
-  // Update FFT bar peak simulation
-  if (chartFFT && waveStep % 3 === 0) {
+  // Cập nhật phổ FFT
+  if (chartFFT && currentTab === "tab-rppg" && waveStep % 4 === 0) {
     const freqs = chartFFT.data.labels;
     const newMags = freqs.map((fStr) => {
       const f = parseFloat(fStr);
@@ -411,7 +426,7 @@ function updateOscilloscopes(bvpPoints, respPoints, hr, rr, chestBpm, chestMotio
       return power + Math.random() * 0.05;
     });
     chartFFT.data.datasets[0].data = newMags;
-    chartFFT.update();
+    chartFFT.update("none");
   }
 }
 
@@ -795,14 +810,12 @@ function connectSSE() {
     try {
       const data = JSON.parse(e.data);
       updateHeroVitals(data);
-      updateOscilloscopes(
-        data.bvp_wave, 
-        data.resp_wave, 
-        data.heart_rate, 
-        data.respiration_rate,
-        data.chest_bpm,
-        data.chest_motion
-      );
+      latestVitals.hr = data.heart_rate || 72;
+      latestVitals.rr = data.respiration_rate || 16;
+      latestVitals.chest = data.chest_bpm || 16;
+      latestVitals.motion = data.chest_motion || 0.0;
+      if (data.bvp_wave && data.bvp_wave.length > 0) latestVitals.bvp_wave = data.bvp_wave;
+      if (data.resp_wave && data.resp_wave.length > 0) latestVitals.resp_wave = data.resp_wave;
     } catch (err) {
       console.warn("[SSE] Lỗi phân tích live_vitals:", err);
     }
